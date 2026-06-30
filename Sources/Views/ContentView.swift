@@ -24,7 +24,7 @@ struct ContentView: View {
                 .overlay(alignment: .bottom) { statusBar }
                 .sheet(isPresented: $showSettings) { SettingsView() }
                 .fullScreenCover(item: $vm.selected) { f in
-                    PhotoViewer(file: f, placeholder: vm.thumbnails[f.id]) { await vm.fullImage(for: $0) }
+                    PhotoViewer(file: f, placeholder: vm.cachedThumbnail(f.id)) { await vm.fullImage(for: $0) }
                 }
         }
     }
@@ -40,10 +40,11 @@ struct ContentView: View {
         } else {
             ScrollView {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 2)], spacing: 2) {
-                    ForEach(Array(vm.files.prefix(vm.visibleCount))) { f in
-                        cell(f).onAppear {
-                            if f.id == vm.files.prefix(vm.visibleCount).last?.id { vm.loadMore() }
-                        }
+                    ForEach(vm.files.prefix(vm.visibleCount), id: \.id) { f in
+                        ThumbCell(file: f, load: { await vm.thumbnail(for: $0) }, onTap: { vm.selected = f })
+                            .onAppear {
+                                if f.id == vm.files.prefix(vm.visibleCount).last?.id { vm.loadMore() }
+                            }
                     }
                 }
                 .padding(.horizontal, 2)
@@ -54,22 +55,28 @@ struct ContentView: View {
         }
     }
 
-    private func cell(_ f: DriveFile) -> some View {
-        Button { vm.selected = f } label: {
-            Color.gray.opacity(0.12)
-                .aspectRatio(1, contentMode: .fit)          // square tile (no overlap)
-                .overlay {
-                    if let img = vm.thumbnails[f.id] {
-                        Image(uiImage: img).resizable().scaledToFill()
-                    } else {
-                        ProgressView()
+    /// One grid tile. Holds its own decrypted thumbnail in @State, so loading it only
+    /// re-renders this cell — not the whole grid (this is what keeps scrolling smooth).
+    private struct ThumbCell: View {
+        let file: DriveFile
+        let load: (DriveFile) async -> UIImage?
+        let onTap: () -> Void
+        @State private var image: UIImage?
+
+        var body: some View {
+            Button(action: onTap) {
+                Color.gray.opacity(0.12)
+                    .aspectRatio(1, contentMode: .fit)      // square tile (no overlap)
+                    .overlay {
+                        if let image { Image(uiImage: image).resizable().scaledToFill() }
+                        else { ProgressView() }
                     }
-                }
-                .clipped()
-                .contentShape(Rectangle())
+                    .clipped()
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .task(id: file.id) { if image == nil { image = await load(file) } }
         }
-        .buttonStyle(.plain)
-        .task { await vm.loadThumbnail(for: f) }
     }
 
     @ViewBuilder private var statusBar: some View {

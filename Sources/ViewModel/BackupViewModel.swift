@@ -10,11 +10,10 @@ final class BackupViewModel: ObservableObject {
     @Published var isConnected = false
     @Published var isBusy = false
     @Published var selected: DriveFile?                   // file shown full-screen (set on tap)
-    @Published var thumbnails: [String: UIImage] = [:]   // fileID -> decrypted thumbnail
     @Published var visibleCount = 20                      // how many cells are shown (grows on scroll)
+    private var thumbCache: [String: UIImage] = [:]       // fileID -> thumbnail; NOT @Published (per-cell @State drives UI)
     private var thumbOrder: [String] = []                 // FIFO eviction order
     private let thumbCap = 400                            // bound thumbnail memory in cache
-    private var inflight = Set<String>()                  // thumbnails currently downloading
     private let limiter = AsyncSemaphore(6)               // cap concurrent thumbnail jobs
     static let pageSize = 20
 
@@ -68,7 +67,7 @@ final class BackupViewModel: ObservableObject {
             for i in found.indices { found[i].decryptedPath = c.decryptName(found[i].encryptedPath) }
             found.sort { ($0.decryptedPath ?? "") < ($1.decryptedPath ?? "") }
             files = found
-            thumbnails = [:]; thumbOrder = []
+            thumbCache = [:]; thumbOrder = []
             visibleCount = min(Self.pageSize, files.count)
             status = "\(files.count) 件"
         } catch {
@@ -83,17 +82,21 @@ final class BackupViewModel: ObservableObject {
     }
 
     /// Download + decrypt + downsample one image into a cached thumbnail (no-op if already cached).
-    func loadThumbnail(for file: DriveFile) async {
+    /// Decrypted thumbnail from cache, or downloaded+decrypted+downsampled off the main thread.
+    /// Returns the image to the calling cell (which stores it in its own @State) — so loading
+    /// one thumbnail does NOT re-render the whole grid.
+    func thumbnail(for file: DriveFile) async -> UIImage? {
         let id = file.id
-        if thumbnails[id] != nil || inflight.contains(id) { return }
-        guard let token, let c = crypt() else { return }
-        inflight.insert(id)
+        if let cached = thumbCache[id] { return cached }
+        guard let token, let c = crypt() else { return nil }
         await limiter.wait()
         let img = await Self.fetchThumbnail(id: id, token: token, crypt: c)
         await limiter.signal()
-        inflight.remove(id)
         if let img { cacheThumbnail(img, for: id) }
+        return img
     }
+
+    func cachedThumbnail(_ id: String) -> UIImage? { thumbCache[id] }
 
     /// Full-resolution decrypted image for the viewer (decoded off the main thread).
     func fullImage(for file: DriveFile) async -> UIImage? {
@@ -102,12 +105,9 @@ final class BackupViewModel: ObservableObject {
     }
 
     private func cacheThumbnail(_ img: UIImage, for id: String) {
-        thumbnails[id] = img
+        thumbCache[id] = img
         thumbOrder.append(id)
-        if thumbOrder.count > thumbCap {
-            let evicted = thumbOrder.removeFirst()
-            thumbnails[evicted] = nil
-        }
+        if thumbOrder.count > thumbCap { thumbCache[thumbOrder.removeFirst()] = nil }
     }
 
     // Heavy work below is `nonisolated` so it runs OFF the main actor — scrolling stays smooth.
