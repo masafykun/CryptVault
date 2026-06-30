@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import ImageIO
 import RcloneCryptKit
 
 @MainActor
@@ -9,6 +10,11 @@ final class BackupViewModel: ObservableObject {
     @Published var isConnected = false
     @Published var isBusy = false
     @Published var previewImage: UIImage?
+    @Published var thumbnails: [String: UIImage] = [:]   // fileID -> decrypted thumbnail
+    @Published var visibleCount = 20                      // how many cells are shown (grows on scroll)
+    private var thumbOrder: [String] = []                 // FIFO eviction order
+    private let thumbCap = 400                            // bound thumbnail memory in cache
+    static let pageSize = 20
 
     /// The plaintext Drive folder that holds the rclone crypt remote (configurable in Settings).
     var rootFolderName: String {
@@ -60,10 +66,55 @@ final class BackupViewModel: ObservableObject {
             for i in found.indices { found[i].decryptedPath = c.decryptName(found[i].encryptedPath) }
             found.sort { ($0.decryptedPath ?? "") < ($1.decryptedPath ?? "") }
             files = found
+            thumbnails = [:]; thumbOrder = []
+            visibleCount = min(Self.pageSize, files.count)
             status = "\(files.count) 件"
         } catch {
             status = "取得失敗: \(error.localizedDescription)"
         }
+    }
+
+    /// Reveal the next page of cells (called when the last visible cell appears).
+    func loadMore() {
+        guard visibleCount < files.count else { return }
+        visibleCount = min(visibleCount + Self.pageSize, files.count)
+    }
+
+    /// Download + decrypt + downsample one image into a cached thumbnail (no-op if already cached).
+    func loadThumbnail(for file: DriveFile) async {
+        if thumbnails[file.id] != nil { return }
+        guard let token, let c = crypt() else { return }
+        do {
+            let client = DriveClient(accessToken: token.accessToken)
+            let blob = try await client.downloadMedia(fileID: file.id)
+            let plain = try c.decryptContent([UInt8](blob))
+            if let img = Self.downsample(Data(plain), maxPixel: 300) {
+                cacheThumbnail(img, for: file.id)
+            }
+        } catch {
+            // leave uncached; the cell keeps its placeholder and may retry on reappear
+        }
+    }
+
+    private func cacheThumbnail(_ img: UIImage, for id: String) {
+        thumbnails[id] = img
+        thumbOrder.append(id)
+        if thumbOrder.count > thumbCap {
+            let evicted = thumbOrder.removeFirst()
+            thumbnails[evicted] = nil
+        }
+    }
+
+    private static func downsample(_ data: Data, maxPixel: CGFloat) -> UIImage? {
+        guard let src = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let opts: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixel,
+        ]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else { return nil }
+        return UIImage(cgImage: cg)
     }
 
     func open(_ file: DriveFile) async {

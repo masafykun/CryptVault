@@ -38,17 +38,37 @@ struct ContentView: View {
                 if vm.isBusy { ProgressView() }
             }.padding()
         } else {
-            List(vm.files) { f in
-                Button { Task { await vm.open(f) } } label: {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(f.displayName)
-                        if !f.decryptedDir.isEmpty {
-                            Text(f.decryptedDir).font(.caption).foregroundStyle(.secondary)
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 8)], spacing: 8) {
+                    ForEach(Array(vm.files.prefix(vm.visibleCount))) { f in
+                        cell(f).onAppear {
+                            if f.id == vm.files.prefix(vm.visibleCount).last?.id { vm.loadMore() }
                         }
                     }
                 }
+                .padding(8)
+                if vm.visibleCount < vm.files.count {
+                    ProgressView().padding(.bottom, 24)
+                }
             }
         }
+    }
+
+    private func cell(_ f: DriveFile) -> some View {
+        Button { Task { await vm.open(f) } } label: {
+            ZStack {
+                if let img = vm.thumbnails[f.id] {
+                    Image(uiImage: img).resizable().scaledToFill()
+                } else {
+                    Rectangle().fill(Color.gray.opacity(0.15)).overlay { ProgressView() }
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 110)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
+        .task { await vm.loadThumbnail(for: f) }
     }
 
     @ViewBuilder private var statusBar: some View {
