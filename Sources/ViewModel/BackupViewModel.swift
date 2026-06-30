@@ -32,10 +32,23 @@ final class BackupViewModel: ObservableObject {
         isConnected = token != nil
     }
 
-    private func crypt() -> RcloneCrypt? {
-        let pw = secrets.cryptPassword
-        guard !pw.isEmpty else { return nil }
-        return try? RcloneCrypt(password: pw, salt: secrets.cryptSalt)
+    private var cryptEngine: RcloneCrypt?   // derived ONCE per refresh — scrypt is expensive
+
+    /// Derive the crypt keys once (off the main thread) and cache the engine for reuse.
+    private func makeCryptIfNeeded() async {
+        let pw = secrets.cryptPassword, salt = secrets.cryptSalt
+        guard !pw.isEmpty else { cryptEngine = nil; return }
+        cryptEngine = await Self.deriveCrypt(pw: pw, salt: salt)
+    }
+
+    nonisolated private static func deriveCrypt(pw: String, salt: String) async -> RcloneCrypt? {
+        try? RcloneCrypt(password: pw, salt: salt)
+    }
+
+    nonisolated private static func decryptNames(_ files: [DriveFile], crypt: RcloneCrypt) async -> [DriveFile] {
+        var out = files
+        for i in out.indices { out[i].decryptedPath = crypt.decryptName(out[i].encryptedPath) }
+        return out
     }
 
     func connect() async {
@@ -54,8 +67,9 @@ final class BackupViewModel: ObservableObject {
 
     func loadList() async {
         guard let token else { status = "未接続です"; return }
-        guard let c = crypt() else { status = "暗号パスワード未設定（⚙️設定から入力）"; return }
         isBusy = true; defer { isBusy = false }
+        await makeCryptIfNeeded()
+        guard let c = cryptEngine else { status = "暗号パスワード未設定（⚙️設定から入力）"; return }
         do {
             status = "一覧取得中…"
             let client = DriveClient(accessToken: token.accessToken)
@@ -63,8 +77,8 @@ final class BackupViewModel: ObservableObject {
             guard let rootID = try await client.findFolderID(named: folder) else {
                 status = "「\(folder)」フォルダが見つかりません"; return
             }
-            var found = try await client.walk(folderID: rootID)
-            for i in found.indices { found[i].decryptedPath = c.decryptName(found[i].encryptedPath) }
+            let raw = try await client.walk(folderID: rootID)
+            var found = await Self.decryptNames(raw, crypt: c)
             found.sort { ($0.decryptedPath ?? "") < ($1.decryptedPath ?? "") }
             files = found
             thumbCache = [:]; thumbOrder = []
@@ -88,7 +102,7 @@ final class BackupViewModel: ObservableObject {
     func thumbnail(for file: DriveFile) async -> UIImage? {
         let id = file.id
         if let cached = thumbCache[id] { return cached }
-        guard let token, let c = crypt() else { return nil }
+        guard let token, let c = cryptEngine else { return nil }
         await limiter.wait()
         let img = await Self.fetchThumbnail(id: id, token: token, crypt: c)
         await limiter.signal()
@@ -100,7 +114,7 @@ final class BackupViewModel: ObservableObject {
 
     /// Full-resolution decrypted image for the viewer (decoded off the main thread).
     func fullImage(for file: DriveFile) async -> UIImage? {
-        guard let token, let c = crypt() else { return nil }
+        guard let token, let c = cryptEngine else { return nil }
         return await Self.fetchFull(id: file.id, token: token, crypt: c)
     }
 
