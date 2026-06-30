@@ -9,11 +9,13 @@ final class BackupViewModel: ObservableObject {
     @Published var status = ""
     @Published var isConnected = false
     @Published var isBusy = false
-    @Published var previewImage: UIImage?
+    @Published var selected: DriveFile?                   // file shown full-screen (set on tap)
     @Published var thumbnails: [String: UIImage] = [:]   // fileID -> decrypted thumbnail
     @Published var visibleCount = 20                      // how many cells are shown (grows on scroll)
     private var thumbOrder: [String] = []                 // FIFO eviction order
     private let thumbCap = 400                            // bound thumbnail memory in cache
+    private var inflight = Set<String>()                  // thumbnails currently downloading
+    private let limiter = AsyncSemaphore(6)               // cap concurrent thumbnail jobs
     static let pageSize = 20
 
     /// The plaintext Drive folder that holds the rclone crypt remote (configurable in Settings).
@@ -82,18 +84,21 @@ final class BackupViewModel: ObservableObject {
 
     /// Download + decrypt + downsample one image into a cached thumbnail (no-op if already cached).
     func loadThumbnail(for file: DriveFile) async {
-        if thumbnails[file.id] != nil { return }
+        let id = file.id
+        if thumbnails[id] != nil || inflight.contains(id) { return }
         guard let token, let c = crypt() else { return }
-        do {
-            let client = DriveClient(accessToken: token.accessToken)
-            let blob = try await client.downloadMedia(fileID: file.id)
-            let plain = try c.decryptContent([UInt8](blob))
-            if let img = Self.downsample(Data(plain), maxPixel: 300) {
-                cacheThumbnail(img, for: file.id)
-            }
-        } catch {
-            // leave uncached; the cell keeps its placeholder and may retry on reappear
-        }
+        inflight.insert(id)
+        await limiter.wait()
+        let img = await Self.fetchThumbnail(id: id, token: token, crypt: c)
+        await limiter.signal()
+        inflight.remove(id)
+        if let img { cacheThumbnail(img, for: id) }
+    }
+
+    /// Full-resolution decrypted image for the viewer (decoded off the main thread).
+    func fullImage(for file: DriveFile) async -> UIImage? {
+        guard let token, let c = crypt() else { return nil }
+        return await Self.fetchFull(id: file.id, token: token, crypt: c)
     }
 
     private func cacheThumbnail(_ img: UIImage, for id: String) {
@@ -105,7 +110,20 @@ final class BackupViewModel: ObservableObject {
         }
     }
 
-    private static func downsample(_ data: Data, maxPixel: CGFloat) -> UIImage? {
+    // Heavy work below is `nonisolated` so it runs OFF the main actor — scrolling stays smooth.
+    nonisolated private static func fetchThumbnail(id: String, token: OAuthToken, crypt: RcloneCrypt) async -> UIImage? {
+        guard let blob = try? await DriveClient(accessToken: token.accessToken).downloadMedia(fileID: id),
+              let plain = try? crypt.decryptContent([UInt8](blob)) else { return nil }
+        return downsample(Data(plain), maxPixel: 300)
+    }
+
+    nonisolated private static func fetchFull(id: String, token: OAuthToken, crypt: RcloneCrypt) async -> UIImage? {
+        guard let blob = try? await DriveClient(accessToken: token.accessToken).downloadMedia(fileID: id),
+              let plain = try? crypt.decryptContent([UInt8](blob)) else { return nil }
+        return UIImage(data: Data(plain))
+    }
+
+    nonisolated private static func downsample(_ data: Data, maxPixel: CGFloat) -> UIImage? {
         guard let src = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
         let opts: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -115,24 +133,5 @@ final class BackupViewModel: ObservableObject {
         ]
         guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else { return nil }
         return UIImage(cgImage: cg)
-    }
-
-    func open(_ file: DriveFile) async {
-        guard let token, let c = crypt() else { return }
-        isBusy = true; defer { isBusy = false }
-        do {
-            status = "復号中… \(file.displayName)"
-            let client = DriveClient(accessToken: token.accessToken)
-            let blob = try await client.downloadMedia(fileID: file.id)
-            let plain = try c.decryptContent([UInt8](blob))
-            if let img = UIImage(data: Data(plain)) {
-                previewImage = img
-                status = file.displayName
-            } else {
-                status = "画像として表示できません（\(plain.count) bytes 復号済み）"
-            }
-        } catch {
-            status = "復号失敗: \(error.localizedDescription)"
-        }
     }
 }

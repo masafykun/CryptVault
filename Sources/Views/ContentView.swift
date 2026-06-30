@@ -1,8 +1,6 @@
 import SwiftUI
 import UIKit
 
-struct ImageBox: Identifiable { let id = UUID(); let image: UIImage }
-
 struct ContentView: View {
     @StateObject private var vm = BackupViewModel()
     @State private var showSettings = false
@@ -25,7 +23,9 @@ struct ContentView: View {
                 }
                 .overlay(alignment: .bottom) { statusBar }
                 .sheet(isPresented: $showSettings) { SettingsView() }
-                .sheet(item: previewBinding) { box in ImageDetailView(image: box.image) }
+                .fullScreenCover(item: $vm.selected) { f in
+                    PhotoViewer(file: f, placeholder: vm.thumbnails[f.id]) { await vm.fullImage(for: $0) }
+                }
         }
     }
 
@@ -39,14 +39,14 @@ struct ContentView: View {
             }.padding()
         } else {
             ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 8)], spacing: 8) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 2)], spacing: 2) {
                     ForEach(Array(vm.files.prefix(vm.visibleCount))) { f in
                         cell(f).onAppear {
                             if f.id == vm.files.prefix(vm.visibleCount).last?.id { vm.loadMore() }
                         }
                     }
                 }
-                .padding(8)
+                .padding(.horizontal, 2)
                 if vm.visibleCount < vm.files.count {
                     ProgressView().padding(.bottom, 24)
                 }
@@ -55,17 +55,18 @@ struct ContentView: View {
     }
 
     private func cell(_ f: DriveFile) -> some View {
-        Button { Task { await vm.open(f) } } label: {
-            ZStack {
-                if let img = vm.thumbnails[f.id] {
-                    Image(uiImage: img).resizable().scaledToFill()
-                } else {
-                    Rectangle().fill(Color.gray.opacity(0.15)).overlay { ProgressView() }
+        Button { vm.selected = f } label: {
+            Color.gray.opacity(0.12)
+                .aspectRatio(1, contentMode: .fit)          // square tile (no overlap)
+                .overlay {
+                    if let img = vm.thumbnails[f.id] {
+                        Image(uiImage: img).resizable().scaledToFill()
+                    } else {
+                        ProgressView()
+                    }
                 }
-            }
-            .frame(maxWidth: .infinity)
-            .frame(height: 110)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
+                .clipped()
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .task { await vm.loadThumbnail(for: f) }
@@ -81,8 +82,4 @@ struct ContentView: View {
         }
     }
 
-    private var previewBinding: Binding<ImageBox?> {
-        Binding(get: { vm.previewImage.map { ImageBox(image: $0) } },
-                set: { if $0 == nil { vm.previewImage = nil } })
-    }
 }
