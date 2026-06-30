@@ -25,10 +25,6 @@ targets:
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         ITSAppUsesNonExemptEncryption: false
-        CFBundleURLTypes:
-          - CFBundleURLName: com.masafy.cryptvault.oauth
-            CFBundleURLSchemes:
-              - com.masafy.cryptvault
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.masafy.cryptvault

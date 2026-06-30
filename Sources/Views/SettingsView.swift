@@ -4,12 +4,19 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var password = ""
     @State private var salt = ""
+    @AppStorage("googleClientID") private var googleClientID = ""
     @AppStorage("rootFolderName") private var rootFolderName = "comfyui-backup"
     private let secrets = SecretsStore()
 
     var body: some View {
         NavigationStack {
             Form {
+                Section("Google OAuth クライアントID") {
+                    TextField("xxxx.apps.googleusercontent.com", text: $googleClientID)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.URL)
+                }
                 Section("復号キー（rclone crypt）") {
                     SecureField("CRYPT_PASSWORD", text: $password)
                     SecureField("CRYPT_SALT (password2)", text: $salt)

@@ -34,13 +34,24 @@ open CryptVault.xcodeproj       # build & run on a simulator or your device
 The `RcloneCryptKit` dependency is resolved from GitHub by Swift Package Manager.
 
 ## Setup before live use
-1. **Google OAuth client** — in Google Cloud Console: create a project, enable the **Drive API**,
-   then create an **OAuth client ID (iOS)** with bundle id `com.masafy.cryptvault`. Paste the
-   client id into `DriveAuth.clientID`. (Add yourself as a test user; the app requests the
-   read-only Drive scope.)
-2. **Crypt keys** — run the app → ⚙️ → enter your rclone crypt `password` / `password2` and the
-   name of the Drive folder that holds the crypt remote (default `comfyui-backup`).
+
+No code editing required — everything is configured in the app's **⚙️ Settings**.
+
+1. **Make your own Google OAuth client** (one-time, ~10 min). In Google Cloud Console:
+   create/pick a project, enable the **Drive API**, open **Google Auth Platform** and under
+   **Clients** create an **OAuth client ID → iOS** with bundle id `com.masafy.cryptvault`
+   (keep it matching the app's bundle id). Under **Audience** keep the app in *Testing* and add
+   your Google account as a **test user**; under **Data access** add the `drive.readonly` scope.
+2. **Configure the app** — run it → ⚙️ and fill in:
+   - your **OAuth client id** (`…apps.googleusercontent.com`) — the app derives the iOS redirect
+     scheme (reversed client id) automatically, so nothing goes in Info.plist
+   - your rclone crypt **password / salt** (`password` / `password2`)
+   - the **Drive folder** that holds the crypt remote (default `comfyui-backup`)
 3. Tap **接続 (Connect)** → Google consent → **更新 (Refresh)**, then tap a file to decrypt + view.
+
+> Each user brings their own OAuth client (in Testing mode, just for themselves) and their own
+> crypt keys — which is why this works as open source without Google's restricted-scope
+> verification. There is no shared/embedded client id in this repo.
 
 ## Layout
 ```

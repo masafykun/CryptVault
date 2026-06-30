@@ -39,7 +39,7 @@ final class BackupViewModel: ObservableObject {
             token = t; secrets.saveToken(t); isConnected = true
             status = "接続しました。「更新」で一覧取得"
         } catch DriveAuthError.noClientID {
-            status = "OAuthクライアントID未設定（DriveAuth.swift の clientID を設定）"
+            status = "⚙️設定で Google クライアントID を入力してください"
         } catch {
             status = "認証失敗: \(error.localizedDescription)"
         }

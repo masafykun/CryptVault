@@ -26,21 +26,31 @@ enum DriveAuthError: Error, LocalizedError {
 /// below. The bundle's URL scheme (com.masafy.cryptvault) is already wired in project.yml.
 final class DriveAuth: NSObject {
 
-    static let clientID = "YOUR_IOS_CLIENT_ID.apps.googleusercontent.com"
-    static let redirectScheme = "com.masafy.cryptvault"
-    static var redirectURI: String { "\(redirectScheme):/oauth2redirect" }
     static let scope = "https://www.googleapis.com/auth/drive.readonly"
+
+    /// Your Google OAuth **iOS** client id, set in the app's Settings (not hard-coded), e.g.
+    /// "1234567890-abcdef.apps.googleusercontent.com". Stored in UserDefaults; it is not a secret.
+    private var clientID: String {
+        (UserDefaults.standard.string(forKey: "googleClientID") ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    /// iOS OAuth uses the *reversed* client id as the redirect URL scheme — derived at runtime.
+    private var redirectScheme: String {
+        guard let r = clientID.range(of: ".apps.googleusercontent.com") else { return "" }
+        return "com.googleusercontent.apps.\(clientID[..<r.lowerBound])"
+    }
+    private var redirectURI: String { "\(redirectScheme):/oauth2redirect" }
 
     private var pkceVerifier = ""
     private var session: ASWebAuthenticationSession?   // retain during the flow
 
     func authorize() async throws -> OAuthToken {
-        guard !DriveAuth.clientID.hasPrefix("YOUR_") else { throw DriveAuthError.noClientID }
+        guard clientID.hasSuffix(".apps.googleusercontent.com") else { throw DriveAuthError.noClientID }
         pkceVerifier = Self.randomURLSafe(64)
         var comps = URLComponents(string: "https://accounts.google.com/o/oauth2/v2/auth")!
         comps.queryItems = [
-            .init(name: "client_id", value: DriveAuth.clientID),
-            .init(name: "redirect_uri", value: DriveAuth.redirectURI),
+            .init(name: "client_id", value: clientID),
+            .init(name: "redirect_uri", value: redirectURI),
             .init(name: "response_type", value: "code"),
             .init(name: "scope", value: DriveAuth.scope),
             .init(name: "code_challenge", value: Self.codeChallenge(pkceVerifier)),
@@ -58,7 +68,7 @@ final class DriveAuth: NSObject {
     private func present(authURL: URL) async throws -> URL {
         try await withCheckedThrowingContinuation { cont in
             let s = ASWebAuthenticationSession(url: authURL,
-                                               callbackURLScheme: DriveAuth.redirectScheme) { url, error in
+                                               callbackURLScheme: redirectScheme) { url, error in
                 if let url { cont.resume(returning: url) }
                 else { cont.resume(throwing: error ?? DriveAuthError.cancelled) }
             }
@@ -73,11 +83,11 @@ final class DriveAuth: NSObject {
         req.httpMethod = "POST"
         req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         req.httpBody = Self.formEncode([
-            "client_id": DriveAuth.clientID,
+            "client_id": clientID,
             "code": code,
             "code_verifier": pkceVerifier,
             "grant_type": "authorization_code",
-            "redirect_uri": DriveAuth.redirectURI,
+            "redirect_uri": redirectURI,
         ]).data(using: .utf8)
         let (data, _) = try await URLSession.shared.data(for: req)
         struct Resp: Codable { let access_token: String; let refresh_token: String?; let expires_in: Double? }
