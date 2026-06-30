@@ -10,12 +10,11 @@ final class BackupViewModel: ObservableObject {
     @Published var isConnected = false
     @Published var isBusy = false
     @Published var selected: DriveFile?                   // file shown full-screen (set on tap)
-    @Published var visibleCount = 20                      // how many cells are shown (grows on scroll)
+    @Published var sections: [FolderSection] = []         // files grouped by folder (section headers)
     private var thumbCache: [String: UIImage] = [:]       // fileID -> thumbnail; NOT @Published (per-cell @State drives UI)
     private var thumbOrder: [String] = []                 // FIFO eviction order
     private let thumbCap = 400                            // bound thumbnail memory in cache
     private let limiter = AsyncSemaphore(6)               // cap concurrent thumbnail jobs
-    static let pageSize = 20
 
     /// The plaintext Drive folder that holds the rclone crypt remote (configurable in Settings).
     var rootFolderName: String {
@@ -81,21 +80,31 @@ final class BackupViewModel: ObservableObject {
             var found = await Self.decryptNames(raw, crypt: c)
             found.sort { ($0.decryptedPath ?? "") < ($1.decryptedPath ?? "") }
             files = found
+            sections = Self.groupIntoSections(found)
             thumbCache = [:]; thumbOrder = []
-            visibleCount = min(Self.pageSize, files.count)
-            status = "\(files.count) 件"
+            status = "\(files.count) 件 / \(sections.count) フォルダ"
         } catch {
             status = "取得失敗: \(error.localizedDescription)"
         }
     }
 
-    /// Reveal the next page of cells (called when the last visible cell appears).
-    func loadMore() {
-        guard visibleCount < files.count else { return }
-        visibleCount = min(visibleCount + Self.pageSize, files.count)
+    /// Group the (already path-sorted) files into folder sections, preserving order.
+    static func groupIntoSections(_ files: [DriveFile]) -> [FolderSection] {
+        var out: [FolderSection] = []
+        var curDir: String?
+        var bucket: [DriveFile] = []
+        for f in files {
+            let d = f.decryptedDir
+            if d != curDir {
+                if let cd = curDir, !bucket.isEmpty { out.append(FolderSection(dir: cd, files: bucket)) }
+                curDir = d; bucket = []
+            }
+            bucket.append(f)
+        }
+        if let cd = curDir, !bucket.isEmpty { out.append(FolderSection(dir: cd, files: bucket)) }
+        return out
     }
 
-    /// Download + decrypt + downsample one image into a cached thumbnail (no-op if already cached).
     /// Decrypted thumbnail from cache, or downloaded+decrypted+downsampled off the main thread.
     /// Returns the image to the calling cell (which stores it in its own @State) — so loading
     /// one thumbnail does NOT re-render the whole grid.

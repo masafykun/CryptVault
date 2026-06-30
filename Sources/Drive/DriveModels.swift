@@ -19,3 +19,10 @@ struct DriveFile: Identifiable, Hashable {
         return (p as NSString).deletingLastPathComponent
     }
 }
+
+/// A group of files that share the same decrypted folder path (one grid section).
+struct FolderSection: Identifiable {
+    var id: String { dir }
+    let dir: String
+    let files: [DriveFile]
+}

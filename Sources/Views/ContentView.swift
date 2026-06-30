@@ -39,20 +39,34 @@ struct ContentView: View {
             }.padding()
         } else {
             ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 2)], spacing: 2) {
-                    ForEach(vm.files.prefix(vm.visibleCount), id: \.id) { f in
-                        ThumbCell(file: f, load: { await vm.thumbnail(for: $0) }, onTap: { vm.selected = f })
-                            .onAppear {
-                                if f.id == vm.files.prefix(vm.visibleCount).last?.id { vm.loadMore() }
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 2)], spacing: 2,
+                          pinnedViews: [.sectionHeaders]) {
+                    ForEach(vm.sections) { section in
+                        Section {
+                            ForEach(section.files, id: \.id) { f in
+                                ThumbCell(file: f, load: { await vm.thumbnail(for: $0) }, onTap: { vm.selected = f })
                             }
+                        } header: {
+                            sectionHeader(section.dir, count: section.files.count)
+                        }
                     }
                 }
                 .padding(.horizontal, 2)
-                if vm.visibleCount < vm.files.count {
-                    ProgressView().padding(.bottom, 24)
-                }
             }
         }
+    }
+
+    private func sectionHeader(_ dir: String, count: Int) -> some View {
+        HStack(spacing: 6) {
+            Text("📁 " + (dir.isEmpty ? "(ルート)" : dir))
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1).truncationMode(.head)
+            Spacer()
+            Text("\(count)").font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 8).padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.ultraThinMaterial)
     }
 
     /// One grid tile. Holds its own decrypted thumbnail in @State, so loading it only

@@ -2,7 +2,8 @@ import SwiftUI
 import UIKit
 
 /// Full-screen, Photos-like viewer. Shows the thumbnail instantly, then swaps in the
-/// full-resolution decrypted image. Pinch to zoom, swipe down (or ✕) to dismiss.
+/// full-resolution decrypted image. Pinch / double-tap to zoom, drag to pan when zoomed,
+/// swipe down (or ✕) to dismiss.
 struct PhotoViewer: View {
     let file: DriveFile
     let placeholder: UIImage?
@@ -10,8 +11,12 @@ struct PhotoViewer: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var full: UIImage?
+
     @State private var scale: CGFloat = 1
-    @State private var drag: CGSize = .zero
+    @State private var lastScale: CGFloat = 1
+    @State private var offset: CGSize = .zero        // pan when zoomed
+    @State private var lastOffset: CGSize = .zero
+    @State private var dismissDrag: CGFloat = 0       // swipe-down-to-dismiss when not zoomed
 
     var body: some View {
         ZStack {
@@ -22,23 +27,13 @@ struct PhotoViewer: View {
                     .resizable()
                     .scaledToFit()
                     .scaleEffect(scale)
-                    .offset(y: drag.height)
-                    .gesture(
-                        MagnificationGesture()
-                            .onChanged { scale = max(1, $0) }
-                            .onEnded { _ in withAnimation { scale = max(1, scale) } }
-                    )
-                    .simultaneousGesture(
-                        DragGesture()
-                            .onChanged { if scale == 1 { drag = $0.translation } }
-                            .onEnded { v in
-                                if scale == 1, abs(v.translation.height) > 120 { dismiss() }
-                                else { withAnimation { drag = .zero } }
-                            }
-                    )
+                    .offset(x: offset.width, y: offset.height + dismissDrag)
+                    .gesture(dragGesture)
+                    .simultaneousGesture(zoomGesture)
+                    .onTapGesture(count: 2) { toggleZoom() }
             }
 
-            if full == nil { ProgressView().tint(.white) }   // loading full-res over the thumbnail
+            if full == nil { ProgressView().tint(.white) }
 
             VStack {
                 HStack {
@@ -54,5 +49,46 @@ struct PhotoViewer: View {
             }
         }
         .task { full = await loadFull(file) }
+    }
+
+    private var zoomGesture: some Gesture {
+        MagnificationGesture()
+            .onChanged { value in scale = max(1, lastScale * value) }
+            .onEnded { _ in
+                lastScale = scale
+                if scale <= 1 { withAnimation { resetZoom() } }
+            }
+    }
+
+    private var dragGesture: some Gesture {
+        DragGesture()
+            .onChanged { v in
+                if scale > 1 {
+                    offset = CGSize(width: lastOffset.width + v.translation.width,
+                                    height: lastOffset.height + v.translation.height)
+                } else {
+                    dismissDrag = v.translation.height
+                }
+            }
+            .onEnded { v in
+                if scale > 1 {
+                    lastOffset = offset
+                } else if abs(v.translation.height) > 120 {
+                    dismiss()
+                } else {
+                    withAnimation { dismissDrag = 0 }
+                }
+            }
+    }
+
+    private func toggleZoom() {
+        withAnimation {
+            if scale > 1 { resetZoom() }
+            else { scale = 2.5; lastScale = 2.5 }
+        }
+    }
+
+    private func resetZoom() {
+        scale = 1; lastScale = 1; offset = .zero; lastOffset = .zero
     }
 }
