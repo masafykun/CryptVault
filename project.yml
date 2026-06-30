@@ -1,0 +1,41 @@
+name: CryptVault
+options:
+  bundleIdPrefix: com.masafy
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+packages:
+  RcloneCryptKit:
+    url: https://github.com/masafykun/RcloneCryptKit.git
+    from: 0.1.0
+targets:
+  CryptVault:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+    dependencies:
+      - package: RcloneCryptKit
+        product: RcloneCryptKit
+    info:
+      path: CryptVault-Info.plist
+      properties:
+        CFBundleDisplayName: CryptVault
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        ITSAppUsesNonExemptEncryption: false
+        CFBundleURLTypes:
+          - CFBundleURLName: com.masafy.cryptvault.oauth
+            CFBundleURLSchemes:
+              - com.masafy.cryptvault
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.masafy.cryptvault
+        MARKETING_VERSION: "0.1"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGNING_ALLOWED: NO
