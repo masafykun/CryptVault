@@ -18,6 +18,19 @@ struct DriveFile: Identifiable, Hashable {
         guard let p = decryptedPath else { return "" }
         return (p as NSString).deletingLastPathComponent
     }
+
+    var fileExtension: String {
+        (displayName as NSString).pathExtension.lowercased()
+    }
+    /// Formats AVFoundation can both thumbnail and play back.
+    var isPlayableVideo: Bool {
+        ["mp4", "mov", "m4v"].contains(fileExtension)
+    }
+    /// Broader set treated as "video" for the ▶️ badge. Some (webm/mkv/avi) can't
+    /// actually be decoded by AVFoundation — the viewer shows a graceful fallback.
+    var isVideo: Bool {
+        isPlayableVideo || ["webm", "mkv", "avi"].contains(fileExtension)
+    }
 }
 
 /// A group of files that share the same decrypted folder path (one grid section).

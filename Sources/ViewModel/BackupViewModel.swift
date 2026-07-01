@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import ImageIO
+import AVFoundation
 import RcloneCryptKit
 
 @MainActor
@@ -15,6 +16,9 @@ final class BackupViewModel: ObservableObject {
     private var thumbOrder: [String] = []                 // FIFO eviction order
     private let thumbCap = 400                            // bound thumbnail memory in cache
     private let limiter = AsyncSemaphore(6)               // cap concurrent thumbnail jobs
+    private var videoTempURLs: [String: URL] = [:]        // fileID -> decrypted temp file (reused for thumb + playback)
+    private var videoTempOrder: [String] = []             // FIFO eviction order (deletes file from disk)
+    private let videoTempCap = 12                          // keep only a few decrypted videos on disk at once
 
     /// The plaintext Drive folder that holds the rclone crypt remote (configurable in Settings).
     var rootFolderName: String {
@@ -29,6 +33,7 @@ final class BackupViewModel: ObservableObject {
     init() {
         token = secrets.loadToken()
         isConnected = token != nil
+        Self.purgeTempDir()   // remove decrypted videos left over from a previous run
     }
 
     private var cryptEngine: RcloneCrypt?   // derived ONCE per refresh — scrypt is expensive
@@ -82,6 +87,7 @@ final class BackupViewModel: ObservableObject {
             files = found
             sections = Self.groupIntoSections(found)
             thumbCache = [:]; thumbOrder = []
+            clearVideoTemps()
             status = "\(files.count) 件 / \(sections.count) フォルダ"
         } catch {
             status = "取得失敗: \(error.localizedDescription)"
@@ -113,13 +119,49 @@ final class BackupViewModel: ObservableObject {
         if let cached = thumbCache[id] { return cached }
         guard let token, let c = cryptEngine else { return nil }
         await limiter.wait()
-        let img = await Self.fetchThumbnail(id: id, token: token, crypt: c)
+        let img: UIImage?
+        if file.isVideo {
+            // Decrypt to a temp file (reused for playback) and grab a frame for the thumbnail.
+            if let url = await videoURL(for: file) {
+                img = await Self.videoThumbnail(url: url, maxPixel: 300)
+            } else {
+                img = nil
+            }
+        } else {
+            img = await Self.fetchThumbnail(id: id, token: token, crypt: c)
+        }
         await limiter.signal()
         if let img { cacheThumbnail(img, for: id) }
         return img
     }
 
     func cachedThumbnail(_ id: String) -> UIImage? { thumbCache[id] }
+
+    /// Decrypted local file URL for a video, written to the temp dir and reused for both the
+    /// thumbnail and full-screen playback. Cached so tapping a cell reuses the decrypted file.
+    func videoURL(for file: DriveFile) async -> URL? {
+        let id = file.id
+        if let u = videoTempURLs[id], FileManager.default.fileExists(atPath: u.path) { return u }
+        guard let token, let c = cryptEngine else { return nil }
+        let ext = file.fileExtension.isEmpty ? "mp4" : file.fileExtension
+        guard let url = await Self.decryptToTemp(id: id, token: token, crypt: c, ext: ext) else { return nil }
+        cacheVideoTemp(url, for: id)
+        return url
+    }
+
+    private func cacheVideoTemp(_ url: URL, for id: String) {
+        videoTempURLs[id] = url
+        videoTempOrder.append(id)
+        if videoTempOrder.count > videoTempCap {
+            let old = videoTempOrder.removeFirst()
+            if let u = videoTempURLs.removeValue(forKey: old) { try? FileManager.default.removeItem(at: u) }
+        }
+    }
+
+    private func clearVideoTemps() {
+        for u in videoTempURLs.values { try? FileManager.default.removeItem(at: u) }
+        videoTempURLs = [:]; videoTempOrder = []
+    }
 
     /// Full-resolution decrypted image for the viewer (decoded off the main thread).
     func fullImage(for file: DriveFile) async -> UIImage? {
@@ -144,6 +186,36 @@ final class BackupViewModel: ObservableObject {
         guard let blob = try? await DriveClient(accessToken: token.accessToken).downloadMedia(fileID: id),
               let plain = try? crypt.decryptContent([UInt8](blob)) else { return nil }
         return UIImage(data: Data(plain))
+    }
+
+    nonisolated private static var mediaTempDir: URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("cryptvault-media", isDirectory: true)
+    }
+
+    nonisolated private static func purgeTempDir() {
+        try? FileManager.default.removeItem(at: mediaTempDir)
+    }
+
+    /// Download + decrypt a whole file to a temp file on disk (needed because AVFoundation
+    /// plays/thumbnails from a URL, not raw bytes). Extension is preserved for type inference.
+    nonisolated private static func decryptToTemp(id: String, token: OAuthToken, crypt: RcloneCrypt, ext: String) async -> URL? {
+        guard let blob = try? await DriveClient(accessToken: token.accessToken).downloadMedia(fileID: id),
+              let plain = try? crypt.decryptContent([UInt8](blob)) else { return nil }
+        let dir = mediaTempDir
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("\(id).\(ext)")
+        do { try Data(plain).write(to: url, options: .atomic); return url }
+        catch { return nil }
+    }
+
+    nonisolated private static func videoThumbnail(url: URL, maxPixel: CGFloat) async -> UIImage? {
+        let asset = AVURLAsset(url: url)
+        let gen = AVAssetImageGenerator(asset: asset)
+        gen.appliesPreferredTrackTransform = true
+        gen.maximumSize = CGSize(width: maxPixel, height: maxPixel)
+        let time = CMTime(seconds: 0.1, preferredTimescale: 600)
+        guard let cg = try? await gen.image(at: time).image else { return nil }
+        return UIImage(cgImage: cg)
     }
 
     nonisolated private static func downsample(_ data: Data, maxPixel: CGFloat) -> UIImage? {

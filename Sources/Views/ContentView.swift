@@ -24,7 +24,11 @@ struct ContentView: View {
                 .overlay(alignment: .bottom) { statusBar }
                 .sheet(isPresented: $showSettings) { SettingsView() }
                 .fullScreenCover(item: $vm.selected) { f in
-                    PhotoViewer(file: f, placeholder: vm.cachedThumbnail(f.id)) { await vm.fullImage(for: $0) }
+                    if f.isVideo {
+                        VideoViewer(file: f) { await vm.videoURL(for: $0) }
+                    } else {
+                        PhotoViewer(file: f, placeholder: vm.cachedThumbnail(f.id)) { await vm.fullImage(for: $0) }
+                    }
                 }
         }
     }
@@ -76,20 +80,36 @@ struct ContentView: View {
         let load: (DriveFile) async -> UIImage?
         let onTap: () -> Void
         @State private var image: UIImage?
+        @State private var loaded = false      // distinguishes "still loading" from "no thumbnail"
 
         var body: some View {
             Button(action: onTap) {
                 Color.gray.opacity(0.12)
                     .aspectRatio(1, contentMode: .fit)      // square tile (no overlap)
                     .overlay {
-                        if let image { Image(uiImage: image).resizable().scaledToFill() }
-                        else { ProgressView() }
+                        if let image {
+                            Image(uiImage: image).resizable().scaledToFill()
+                        } else if loaded {
+                            Image(systemName: file.isVideo ? "film" : "photo")
+                                .font(.title2).foregroundStyle(.secondary)
+                        } else {
+                            ProgressView()
+                        }
+                    }
+                    .overlay(alignment: .bottomLeading) {
+                        if file.isVideo {
+                            Image(systemName: "play.circle.fill")
+                                .font(.callout)
+                                .foregroundStyle(.white)
+                                .shadow(color: .black.opacity(0.6), radius: 2)
+                                .padding(4)
+                        }
                     }
                     .clipped()
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .task(id: file.id) { if image == nil { image = await load(file) } }
+            .task(id: file.id) { if image == nil { image = await load(file); loaded = true } }
         }
     }
 
