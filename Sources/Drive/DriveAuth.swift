@@ -30,7 +30,10 @@ enum DriveAuthError: Error, LocalizedError {
 /// below. The bundle's URL scheme (com.masafy.cryptvault) is already wired in project.yml.
 final class DriveAuth: NSObject {
 
-    static let scope = "https://www.googleapis.com/auth/drive.readonly"
+    // Full drive scope: needed to upload/create/delete (readonly can't write, and drive.file
+    // can't touch files rclone created). Restricted scope, but fine for a personal client in
+    // Testing mode with yourself as the test user.
+    static let scope = "https://www.googleapis.com/auth/drive"
 
     /// Your Google OAuth **iOS** client id, set in the app's Settings (not hard-coded), e.g.
     /// "1234567890-abcdef.apps.googleusercontent.com". Stored in UserDefaults; it is not a secret.

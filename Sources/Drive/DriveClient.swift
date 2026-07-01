@@ -5,6 +5,10 @@ enum DriveError: Error, LocalizedError {
     var errorDescription: String? { if case let .http(c) = self { return "Drive API HTTP \(c)" }; return nil }
 }
 
+private extension Data {
+    mutating func appendString(_ s: String) { append(Data(s.utf8)) }
+}
+
 /// Thin Google Drive v3 REST client (read-only). Bring your own access token.
 /// NOTE(skeleton): pagination (`nextPageToken`) is not yet handled — see TODO in `rawList`.
 struct DriveClient {
@@ -36,6 +40,62 @@ struct DriveClient {
             }
         }
         return out
+    }
+
+    /// Upload a new file (raw bytes) into a parent folder via multipart. Returns the new fileId.
+    func uploadFile(name: String, parentID: String, data: Data,
+                    mimeType: String = "application/octet-stream") async throws -> String {
+        let boundary = "cryptvault-\(UUID().uuidString)"
+        var body = Data()
+        let meta: [String: Any] = ["name": name, "parents": [parentID]]
+        let metaData = try JSONSerialization.data(withJSONObject: meta)
+        body.appendString("--\(boundary)\r\n")
+        body.appendString("Content-Type: application/json; charset=UTF-8\r\n\r\n")
+        body.append(metaData)
+        body.appendString("\r\n--\(boundary)\r\n")
+        body.appendString("Content-Type: \(mimeType)\r\n\r\n")
+        body.append(data)
+        body.appendString("\r\n--\(boundary)--\r\n")
+
+        var req = URLRequest(url: URL(string: "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id")!)
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        req.setValue("multipart/related; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        req.httpBody = body
+        let (respData, resp) = try await URLSession.shared.data(for: req)
+        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        guard code == 200 else { throw DriveError.http(code) }
+        struct R: Codable { let id: String }
+        return try JSONDecoder().decode(R.self, from: respData).id
+    }
+
+    /// Create a folder. `parentID == nil` creates it at My Drive root (used for the vault root).
+    func createFolder(name: String, parentID: String?) async throws -> String {
+        var meta: [String: Any] = ["name": name,
+                                   "mimeType": "application/vnd.google-apps.folder"]
+        if let parentID { meta["parents"] = [parentID] }
+        var req = URLRequest(url: URL(string: "\(base)/files?fields=id")!)
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: meta)
+        let (respData, resp) = try await URLSession.shared.data(for: req)
+        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        guard code == 200 else { throw DriveError.http(code) }
+        struct R: Codable { let id: String }
+        return try JSONDecoder().decode(R.self, from: respData).id
+    }
+
+    /// Move a file to Drive trash (recoverable for ~30 days).
+    func trash(fileID: String) async throws {
+        var req = URLRequest(url: URL(string: "\(base)/files/\(fileID)?fields=id")!)
+        req.httpMethod = "PATCH"
+        req.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: ["trashed": true])
+        let (_, resp) = try await URLSession.shared.data(for: req)
+        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        guard code == 200 else { throw DriveError.http(code) }
     }
 
     func downloadMedia(fileID: String) async throws -> Data {

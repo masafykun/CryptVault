@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct SettingsView: View {
+    @ObservedObject var vm: BackupViewModel
     @Environment(\.dismiss) private var dismiss
     @State private var password = ""
     @State private var salt = ""
@@ -14,6 +15,17 @@ struct SettingsView: View {
             Form {
                 Section("セキュリティ") {
                     Toggle("起動時に認証（Face ID / パスコード）", isOn: $appLockEnabled)
+                }
+                Section("Google アカウント") {
+                    Button {
+                        Task { await vm.connect() }
+                        dismiss()
+                    } label: {
+                        Label(vm.isConnected ? "Google に再接続（読み書き権限を許可）" : "Google に接続",
+                              systemImage: "person.crop.circle.badge.checkmark")
+                    }
+                    Text("アップロード・削除には書き込み権限が必要です。読み取り専用で接続済みの場合は、一度再接続してください。")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("Google OAuth クライアントID") {
                     TextField("xxxx.apps.googleusercontent.com", text: $googleClientID)

@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @StateObject private var vm = BackupViewModel()
@@ -26,7 +27,7 @@ struct ContentView: View {
                 #endif
             }
             .overlay(alignment: .bottom) { statusBar }
-            .sheet(isPresented: $showSettings) { SettingsView() }
+            .sheet(isPresented: $showSettings) { SettingsView(vm: vm) }
             .navigationDestination(for: FolderRoute.self) { route in
                 FolderGridView(dir: route.dir, vm: vm)
             }
@@ -38,6 +39,7 @@ struct ContentView: View {
     }
 
     @ViewBuilder private var trailingActions: some View {
+        if vm.isConnected { AddFileButton(vm: vm, dir: "") }      // add to vault root
         if !vm.sections.isEmpty { SortMenu(vm: vm) }
         if vm.isConnected {
             Button("更新") { Task { await vm.loadList() } }
@@ -80,6 +82,24 @@ struct SortMenu: View {
     }
 }
 
+/// Toolbar "+" button: pick local files, encrypt them, and upload into `dir`.
+struct AddFileButton: View {
+    @ObservedObject var vm: BackupViewModel
+    let dir: String
+    @State private var importing = false
+
+    var body: some View {
+        Button { importing = true } label: { Image(systemName: "plus") }
+            .fileImporter(isPresented: $importing,
+                          allowedContentTypes: [.item],
+                          allowsMultipleSelection: true) { result in
+                if case .success(let urls) = result, !urls.isEmpty {
+                    Task { await vm.addFiles(urls, toDir: dir) }
+                }
+            }
+    }
+}
+
 /// First screen: pick a folder. Solves "output has too many files to reach other folders".
 struct FolderListView: View {
     @ObservedObject var vm: BackupViewModel
@@ -117,6 +137,7 @@ struct FolderListView: View {
 struct FolderGridView: View {
     let dir: String
     @ObservedObject var vm: BackupViewModel
+    @State private var pendingDelete: DriveFile?
 
     private var files: [DriveFile] { vm.sections.first { $0.dir == dir }?.files ?? [] }
     private var title: String { vm.sections.first { $0.dir == dir }?.displayName ?? dir }
@@ -125,7 +146,9 @@ struct FolderGridView: View {
         ScrollView {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 2)], spacing: 2) {
                 ForEach(files, id: \.id) { f in
-                    ThumbCell(file: f, load: { await vm.thumbnail(for: $0) }, onTap: { vm.selected = f })
+                    ThumbCell(file: f, load: { await vm.thumbnail(for: $0) },
+                              onTap: { vm.selected = f },
+                              onDelete: { pendingDelete = f })
                 }
             }
             .padding(.horizontal, 2)
@@ -135,7 +158,19 @@ struct FolderGridView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .toolbar {
+            ToolbarItem { AddFileButton(vm: vm, dir: dir) }
             ToolbarItem { SortMenu(vm: vm) }
+        }
+        .confirmationDialog("このファイルを削除しますか？",
+                            isPresented: Binding(get: { pendingDelete != nil },
+                                                 set: { if !$0 { pendingDelete = nil } }),
+                            presenting: pendingDelete) { file in
+            Button("削除（ゴミ箱へ）", role: .destructive) {
+                Task { await vm.deleteFile(file) }
+            }
+            Button("キャンセル", role: .cancel) {}
+        } message: { file in
+            Text(file.displayName)
         }
         .fullCover(item: $vm.selected) { f in
             if f.usesVLC {
@@ -155,6 +190,7 @@ struct ThumbCell: View {
     let file: DriveFile
     let load: (DriveFile) async -> PlatformImage?
     let onTap: () -> Void
+    var onDelete: (() -> Void)? = nil
     @State private var image: PlatformImage?
     @State private var loaded = false      // distinguishes "still loading" from "no thumbnail"
 
@@ -186,5 +222,10 @@ struct ThumbCell: View {
         }
         .buttonStyle(.plain)
         .task(id: file.id) { if image == nil { image = await load(file); loaded = true } }
+        .contextMenu {
+            if let onDelete {
+                Button(role: .destructive) { onDelete() } label: { Label("削除", systemImage: "trash") }
+            }
+        }
     }
 }

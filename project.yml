@@ -8,7 +8,7 @@ options:
 packages:
   RcloneCryptKit:
     url: https://github.com/masafykun/RcloneCryptKit.git
-    from: 0.1.0
+    from: 0.2.0
   VLCKitSPM:
     url: https://github.com/tylerjonesio/vlckit-spm.git
     exactVersion: 3.6.0

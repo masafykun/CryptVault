@@ -128,6 +128,89 @@ final class BackupViewModel: ObservableObject {
         }
     }
 
+    // MARK: - Write (encrypt + upload, delete)
+
+    /// Encrypt the given local files and upload them into `dir` (a decrypted path relative to the
+    /// vault root; "" = root). Creates encrypted intermediate folders as needed, then refreshes.
+    func addFiles(_ urls: [URL], toDir dir: String) async {
+        guard let tok = await ensureValidToken() else { return }
+        await makeCryptIfNeeded()
+        guard let c = cryptEngine else { status = "暗号キー未設定（⚙️設定から入力）"; return }
+        isBusy = true; defer { isBusy = false }
+        let client = DriveClient(accessToken: tok.accessToken)
+        do {
+            let folder = rootFolderName
+            let rootID: String
+            if let found = try await client.findFolderID(named: folder) {
+                rootID = found
+            } else {
+                rootID = try await client.createFolder(name: folder, parentID: nil)   // new vault root
+                status = "Vaultフォルダ「\(folder)」を作成しました"
+            }
+            let targetID = try await Self.ensureEncryptedDir(dir, under: rootID, crypt: c, client: client)
+            var done = 0
+            for url in urls {
+                let ok = url.startAccessingSecurityScopedResource()
+                let cipher = await Self.readAndEncrypt(url: url, crypt: c)
+                if ok { url.stopAccessingSecurityScopedResource() }
+                guard let cipher else { continue }
+                let encName = c.encryptName(url.lastPathComponent)
+                _ = try await client.uploadFile(name: encName, parentID: targetID, data: Data(cipher))
+                done += 1
+                status = "アップロード中… \(done)/\(urls.count)"
+            }
+            status = "\(done) 件アップロードしました"
+            await loadList()
+        } catch DriveError.http(403) {
+            status = "書き込み権限がありません。⚙️設定→Google再接続で許可してください"
+        } catch DriveError.http(401) {
+            isConnected = false
+            status = "認証が切れました。「接続」で再ログインしてください"
+        } catch {
+            status = "アップロード失敗: \(error.localizedDescription)"
+        }
+    }
+
+    /// Move a file to Drive trash (recoverable) and drop it from the local model.
+    func deleteFile(_ file: DriveFile) async {
+        guard let tok = await ensureValidToken() else { return }
+        let client = DriveClient(accessToken: tok.accessToken)
+        do {
+            try await client.trash(fileID: file.id)
+            allFiles.removeAll { $0.id == file.id }
+            files = allFiles
+            applySort()
+            thumbCache[file.id] = nil
+            status = "「\(file.displayName)」をゴミ箱へ移動しました"
+        } catch DriveError.http(403) {
+            status = "削除権限がありません。⚙️設定→Google再接続で許可してください"
+        } catch {
+            status = "削除失敗: \(error.localizedDescription)"
+        }
+    }
+
+    /// Resolve (creating if needed) the Drive folder id for a decrypted directory path, encrypting
+    /// each segment. "" returns the vault root id.
+    nonisolated private static func ensureEncryptedDir(_ dir: String, under rootID: String,
+                                                       crypt c: RcloneCrypt, client: DriveClient) async throws -> String {
+        var parent = rootID
+        for seg in dir.split(separator: "/", omittingEmptySubsequences: true) {
+            let enc = c.encryptName(String(seg))
+            if let existing = try await client.findFolderID(named: enc, parent: parent) {
+                parent = existing
+            } else {
+                parent = try await client.createFolder(name: enc, parentID: parent)
+            }
+        }
+        return parent
+    }
+
+    /// Read a local file and encrypt it — off the main actor (files can be large).
+    nonisolated private static func readAndEncrypt(url: URL, crypt c: RcloneCrypt) async -> [UInt8]? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return c.encryptContent([UInt8](data))
+    }
+
     /// Re-group `allFiles` into folder sections using the current sort order (folders and the
     /// files inside them). Cheap enough to run on every sort-order change.
     func applySort() {
