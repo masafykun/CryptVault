@@ -31,7 +31,8 @@ struct DriveClient {
             } else {
                 out.append(DriveFile(id: child.id, encryptedName: child.encryptedName,
                                      encryptedPath: path, decryptedPath: nil,
-                                     isFolder: false, size: child.size))
+                                     isFolder: false, size: child.size,
+                                     modifiedTime: child.modifiedTime))
             }
         }
         return out
@@ -47,27 +48,45 @@ struct DriveClient {
     }
 
     private func rawList(query: String) async throws -> [DriveFile] {
-        var comps = URLComponents(string: "\(base)/files")!
-        comps.queryItems = [
-            .init(name: "q", value: query),
-            .init(name: "fields", value: "files(id,name,mimeType,size)"),
-            .init(name: "pageSize", value: "1000"),    // TODO: follow nextPageToken for >1000
-            .init(name: "spaces", value: "drive"),
-        ]
-        var req = URLRequest(url: comps.url!)
-        req.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        let (data, resp) = try await URLSession.shared.data(for: req)
-        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-        guard code == 200 else { throw DriveError.http(code) }
-        struct R: Codable {
-            let files: [F]
-            struct F: Codable { let id: String; let name: String; let mimeType: String; let size: String? }
-        }
-        let r = try JSONDecoder().decode(R.self, from: data)
-        return r.files.map {
-            DriveFile(id: $0.id, encryptedName: $0.name, encryptedPath: $0.name, decryptedPath: nil,
-                      isFolder: $0.mimeType == "application/vnd.google-apps.folder",
-                      size: $0.size.flatMap { Int64($0) })
-        }
+        var out = [DriveFile]()
+        var pageToken: String?
+        repeat {
+            var comps = URLComponents(string: "\(base)/files")!
+            comps.queryItems = [
+                .init(name: "q", value: query),
+                .init(name: "fields", value: "nextPageToken,files(id,name,mimeType,size,modifiedTime)"),
+                .init(name: "pageSize", value: "1000"),
+                .init(name: "spaces", value: "drive"),
+            ]
+            if let pageToken { comps.queryItems?.append(.init(name: "pageToken", value: pageToken)) }
+            var req = URLRequest(url: comps.url!)
+            req.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            guard code == 200 else { throw DriveError.http(code) }
+            struct R: Codable {
+                let nextPageToken: String?
+                let files: [F]
+                struct F: Codable { let id: String; let name: String; let mimeType: String; let size: String?; let modifiedTime: String? }
+            }
+            let r = try JSONDecoder().decode(R.self, from: data)
+            out += r.files.map {
+                DriveFile(id: $0.id, encryptedName: $0.name, encryptedPath: $0.name, decryptedPath: nil,
+                          isFolder: $0.mimeType == "application/vnd.google-apps.folder",
+                          size: $0.size.flatMap { Int64($0) },
+                          modifiedTime: $0.modifiedTime.flatMap(Self.parseDate))
+            }
+            pageToken = r.nextPageToken
+        } while pageToken != nil
+        return out
     }
+
+    /// RFC3339 (e.g. "2026-07-01T09:59:04.000Z") -> Date. Tolerates missing fractional seconds.
+    private static let isoFrac: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; return f
+    }()
+    private static let iso: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime]; return f
+    }()
+    static func parseDate(_ s: String) -> Date? { isoFrac.date(from: s) ?? iso.date(from: s) }
 }

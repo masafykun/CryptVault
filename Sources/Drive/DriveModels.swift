@@ -9,6 +9,7 @@ struct DriveFile: Identifiable, Hashable {
     var decryptedPath: String?     // real path, e.g. "output/_audit0630/24_...png"
     let isFolder: Bool
     let size: Int64?
+    var modifiedTime: Date?        // Drive modifiedTime (≈ when it was backed up); drives date sort
 
     var displayName: String {
         if let p = decryptedPath { return (p as NSString).lastPathComponent }
@@ -36,9 +37,35 @@ struct DriveFile: Identifiable, Hashable {
     var isVideo: Bool { usesAVFoundation || usesVLC }
 }
 
-/// A group of files that share the same decrypted folder path (one grid section).
-struct FolderSection: Identifiable {
+/// A group of files that share the same decrypted folder path (one folder in the picker).
+struct FolderSection: Identifiable, Hashable {
     var id: String { dir }
     let dir: String
     let files: [DriveFile]
+
+    var count: Int { files.count }
+    var latestModified: Date? { files.compactMap { $0.modifiedTime }.max() }
+    /// Display name for the folder row: the path relative to the top "output/" prefix when present.
+    var displayName: String {
+        if dir.isEmpty { return "(ルート)" }
+        if dir == "output" { return "output" }
+        if dir.hasPrefix("output/") { return String(dir.dropFirst("output/".count)) }
+        return dir
+    }
 }
+
+/// User-selectable ordering for folders and files. Persisted in UserDefaults.
+enum SortOrder: String, CaseIterable, Identifiable {
+    case modifiedDesc, modifiedAsc, name
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .modifiedDesc: return "更新日（新しい順）"
+        case .modifiedAsc:  return "更新日（古い順）"
+        case .name:         return "名前順"
+        }
+    }
+}
+
+/// Navigation value for drilling into a folder's grid.
+struct FolderRoute: Hashable { let dir: String }

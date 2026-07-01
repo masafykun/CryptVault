@@ -11,7 +11,14 @@ final class BackupViewModel: ObservableObject {
     @Published var isConnected = false
     @Published var isBusy = false
     @Published var selected: DriveFile?                   // file shown full-screen (set on tap)
-    @Published var sections: [FolderSection] = []         // files grouped by folder (section headers)
+    @Published var sections: [FolderSection] = []         // files grouped by folder (folder picker)
+    @Published var sortOrder: SortOrder = .modifiedDesc { // default: newest first
+        didSet {
+            UserDefaults.standard.set(sortOrder.rawValue, forKey: "sortOrder")
+            applySort()
+        }
+    }
+    private var allFiles: [DriveFile] = []                // unsorted master; re-sorted into `sections`
     private var thumbCache: [String: UIImage] = [:]       // fileID -> thumbnail; NOT @Published (per-cell @State drives UI)
     private var thumbOrder: [String] = []                 // FIFO eviction order
     private let thumbCap = 400                            // bound thumbnail memory in cache
@@ -54,6 +61,9 @@ final class BackupViewModel: ObservableObject {
     init() {
         token = secrets.loadToken()
         isConnected = token != nil
+        if let raw = UserDefaults.standard.string(forKey: "sortOrder"), let o = SortOrder(rawValue: raw) {
+            sortOrder = o
+        }
         Self.purgeTempDir()   // remove decrypted videos left over from a previous run
     }
 
@@ -104,10 +114,10 @@ final class BackupViewModel: ObservableObject {
                 status = "「\(folder)」フォルダが見つかりません"; return
             }
             let raw = try await client.walk(folderID: rootID)
-            var found = await Self.decryptNames(raw, crypt: c)
-            found.sort { ($0.decryptedPath ?? "") < ($1.decryptedPath ?? "") }
+            let found = await Self.decryptNames(raw, crypt: c)
+            allFiles = found
             files = found
-            sections = Self.groupIntoSections(found)
+            applySort()
             thumbCache = [:]; thumbOrder = []
             clearVideoTemps()
             status = "\(files.count) 件 / \(sections.count) フォルダ"
@@ -119,21 +129,37 @@ final class BackupViewModel: ObservableObject {
         }
     }
 
-    /// Group the (already path-sorted) files into folder sections, preserving order.
-    static func groupIntoSections(_ files: [DriveFile]) -> [FolderSection] {
-        var out: [FolderSection] = []
-        var curDir: String?
-        var bucket: [DriveFile] = []
-        for f in files {
-            let d = f.decryptedDir
-            if d != curDir {
-                if let cd = curDir, !bucket.isEmpty { out.append(FolderSection(dir: cd, files: bucket)) }
-                curDir = d; bucket = []
-            }
-            bucket.append(f)
+    /// Re-group `allFiles` into folder sections using the current sort order (folders and the
+    /// files inside them). Cheap enough to run on every sort-order change.
+    func applySort() {
+        sections = Self.makeSections(allFiles, order: sortOrder)
+    }
+
+    static func sortFiles(_ files: [DriveFile], order: SortOrder) -> [DriveFile] {
+        switch order {
+        case .name:
+            return files.sorted { ($0.decryptedPath ?? "") < ($1.decryptedPath ?? "") }
+        case .modifiedDesc:
+            return files.sorted { ($0.modifiedTime ?? .distantPast) > ($1.modifiedTime ?? .distantPast) }
+        case .modifiedAsc:
+            return files.sorted { ($0.modifiedTime ?? .distantPast) < ($1.modifiedTime ?? .distantPast) }
         }
-        if let cd = curDir, !bucket.isEmpty { out.append(FolderSection(dir: cd, files: bucket)) }
-        return out
+    }
+
+    /// Bucket files by folder, sort within each folder, then order the folders themselves.
+    static func makeSections(_ files: [DriveFile], order: SortOrder) -> [FolderSection] {
+        var byDir: [String: [DriveFile]] = [:]
+        for f in files { byDir[f.decryptedDir, default: []].append(f) }
+        var sections = byDir.map { FolderSection(dir: $0.key, files: sortFiles($0.value, order: order)) }
+        switch order {
+        case .name:
+            sections.sort { $0.dir < $1.dir }
+        case .modifiedDesc:
+            sections.sort { ($0.latestModified ?? .distantPast) > ($1.latestModified ?? .distantPast) }
+        case .modifiedAsc:
+            sections.sort { ($0.latestModified ?? .distantPast) < ($1.latestModified ?? .distantPast) }
+        }
+        return sections
     }
 
     /// Decrypted thumbnail from cache, or downloaded+decrypted+downsampled off the main thread.
