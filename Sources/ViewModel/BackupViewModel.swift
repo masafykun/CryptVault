@@ -179,8 +179,13 @@ final class BackupViewModel: ObservableObject {
                 img = nil
             }
         } else if file.usesVLC {
-            // Non-Apple formats: show the film icon in the grid; decrypt only when opened.
-            img = nil
+            // Non-Apple formats: decrypt to a temp file (reused for playback) and let VLC
+            // generate a still-frame thumbnail.
+            if let url = await videoURL(for: file) {
+                img = await VLCThumbnailer.thumbnail(url: url, maxPixel: 300)
+            } else {
+                img = nil
+            }
         } else {
             img = await Self.fetchThumbnail(id: id, token: token, crypt: c)
         }
