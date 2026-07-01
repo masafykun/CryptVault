@@ -310,13 +310,18 @@ struct FolderGridView: View {
             Text(file.displayName)
         }
         .fullCover(item: $vm.selected) { f in
-            if f.usesVLC {
-                VLCVideoViewer(file: f) { await vm.videoURL(for: $0) }
-            } else if f.usesAVFoundation {
-                VideoViewer(file: f) { await vm.videoURL(for: $0) }
-            } else {
-                PhotoViewer(file: f, placeholder: vm.cachedThumbnail(f.id)) { await vm.fullImage(for: $0) }
+            // Presented layers render ABOVE the root privacy shield, so the viewer carries its
+            // own — otherwise decrypted content would stay visible over the lock / app switcher.
+            Group {
+                if f.usesVLC {
+                    VLCVideoViewer(file: f) { await vm.videoURL(for: $0) }
+                } else if f.usesAVFoundation {
+                    VideoViewer(file: f) { await vm.videoURL(for: $0) }
+                } else {
+                    PhotoViewer(file: f, placeholder: vm.cachedThumbnail(f.id)) { await vm.fullImage(for: $0) }
+                }
             }
+            .privacyShield()
         }
     }
 }

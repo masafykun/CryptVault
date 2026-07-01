@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 #if os(macOS)
 import AppKit
@@ -7,6 +8,24 @@ public typealias PlatformImage = NSImage
 import UIKit
 public typealias PlatformImage = UIImage
 #endif
+
+// MARK: - Clipboard
+
+enum Clipboard {
+    /// Copy sensitive text (crypt keys). On iOS the pasteboard entry is local-only (no Handoff /
+    /// universal clipboard) and expires after 60 seconds, so keys don't linger for other apps.
+    static func copySensitive(_ s: String) {
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(s, forType: .string)
+        #else
+        UIPasteboard.general.setItems(
+            [[UTType.utf8PlainText.identifier: s]],
+            options: [.localOnly: true,
+                      .expirationDate: Date().addingTimeInterval(60)])
+        #endif
+    }
+}
 
 // MARK: - Image bridging (UIImage / NSImage)
 

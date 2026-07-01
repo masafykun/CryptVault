@@ -14,15 +14,37 @@ struct WebDAVClient {
     let user: String
     let pass: String
 
-    private func makeRequest(_ method: String, path: String) -> URLRequest {
-        var comps = baseURL
+    /// Refuses cross-origin redirects, so the Basic `Authorization` header can never be replayed
+    /// to another host by a compromised or misconfigured server. Same-origin redirects (e.g. the
+    /// 301 some servers send for a missing directory trailing slash) are followed as usual.
+    private final class SameOriginRedirectGuard: NSObject, URLSessionTaskDelegate {
+        func urlSession(_ session: URLSession, task: URLSessionTask,
+                        willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest,
+                        completionHandler: @escaping (URLRequest?) -> Void) {
+            if let from = task.originalRequest?.url, let to = request.url,
+               from.host == to.host, from.scheme == to.scheme, from.port == to.port {
+                completionHandler(request)
+            } else {
+                completionHandler(nil)   // deliver the 3xx as-is; our status guards throw on it
+            }
+        }
+    }
+    private static let redirectGuard = SameOriginRedirectGuard()
+
+    private func makeRequest(_ method: String, path: String) throws -> URLRequest {
+        var comps = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         if comps.hasSuffix("/") { comps.removeLast() }
         let p = path.hasPrefix("/") ? path : "/" + path
         // base32hex path segments are URL-safe (0-9a-v), but encode defensively.
         let encoded = p.split(separator: "/", omittingEmptySubsequences: false)
             .map { $0.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? String($0) }
             .joined(separator: "/")
-        var req = URLRequest(url: URL(string: comps + encoded)!)
+        guard let url = URL(string: comps + encoded), url.host != nil,
+              let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http" else {
+            throw DriveError.httpBody(0, "WebDAV URLが不正です: \(baseURL)")
+        }
+        var req = URLRequest(url: url)
         req.httpMethod = method
         let cred = Data("\(user):\(pass)".utf8).base64EncodedString()
         req.setValue("Basic \(cred)", forHTTPHeaderField: "Authorization")
@@ -33,28 +55,40 @@ struct WebDAVClient {
 
     /// PROPFIND one directory level (Depth: 1). Returns the directory's children (excludes itself).
     func propfind(path: String) async throws -> [WebDAVItem] {
-        var req = makeRequest("PROPFIND", path: path.hasSuffix("/") ? path : path + "/")
+        var req = try makeRequest("PROPFIND", path: path.hasSuffix("/") ? path : path + "/")
         req.setValue("1", forHTTPHeaderField: "Depth")
         req.setValue("application/xml", forHTTPHeaderField: "Content-Type")
         req.httpBody = Data("""
         <?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop>\
         <d:resourcetype/><d:getcontentlength/><d:getlastmodified/></d:prop></d:propfind>
         """.utf8)
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp) = try await URLSession.shared.data(for: req, delegate: Self.redirectGuard)
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         guard code == 207 || code == 200 else { throw DriveError.httpBody(code, String(data: data, encoding: .utf8) ?? "") }
         let self_ = Self.normalize(path)
         return WebDAVParser.parse(data).filter { Self.normalize($0.path) != self_ }
     }
 
-    /// Recursively collect every leaf file under `root`.
+    /// Recursively collect every leaf file under `root`. A missing root (404: vault not created
+    /// yet) yields an empty list; any other failure on the root (auth, network, TLS) propagates,
+    /// so the UI shows a real error instead of a silently empty vault. Subdirectories that
+    /// disappear mid-walk are skipped.
     func walk(root: String) async throws -> [WebDAVItem] {
         var out = [WebDAVItem]()
         var stack = [root]
+        var isRoot = true
         while let dir = stack.popLast() {
+            let wasRoot = isRoot
+            isRoot = false
             let children: [WebDAVItem]
             do { children = try await propfind(path: dir) }
-            catch { continue }   // missing/inaccessible dir -> skip
+            catch {
+                if wasRoot {
+                    if case DriveError.httpBody(404, _) = error { return [] }
+                    throw error
+                }
+                continue
+            }
             for c in children {
                 if c.isCollection { stack.append(c.path) } else { out.append(c) }
             }
@@ -63,29 +97,31 @@ struct WebDAVClient {
     }
 
     func get(path: String) async throws -> Data {
-        let (data, resp) = try await URLSession.shared.data(for: makeRequest("GET", path: path))
+        let req = try makeRequest("GET", path: path)
+        let (data, resp) = try await URLSession.shared.data(for: req, delegate: Self.redirectGuard)
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         guard code == 200 else { throw DriveError.httpBody(code, "") }
         return data
     }
 
     func put(path: String, data: Data) async throws {
-        var req = makeRequest("PUT", path: path)
-        req.httpBody = data
-        let (respData, resp) = try await URLSession.shared.upload(for: req, from: data)
+        let req = try makeRequest("PUT", path: path)
+        let (respData, resp) = try await URLSession.shared.upload(for: req, from: data, delegate: Self.redirectGuard)
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         guard (200...204).contains(code) else { throw DriveError.httpBody(code, String(data: respData, encoding: .utf8) ?? "") }
     }
 
     /// Create a collection (folder). Treats "already exists" (405/301) as success.
     func mkcol(path: String) async throws {
-        let (_, resp) = try await URLSession.shared.data(for: makeRequest("MKCOL", path: path))
+        let req = try makeRequest("MKCOL", path: path)
+        let (_, resp) = try await URLSession.shared.data(for: req, delegate: Self.redirectGuard)
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         guard (200...204).contains(code) || code == 405 || code == 301 else { throw DriveError.httpBody(code, "") }
     }
 
     func delete(path: String) async throws {
-        let (_, resp) = try await URLSession.shared.data(for: makeRequest("DELETE", path: path))
+        let req = try makeRequest("DELETE", path: path)
+        let (_, resp) = try await URLSession.shared.data(for: req, delegate: Self.redirectGuard)
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         guard (200...204).contains(code) || code == 404 else { throw DriveError.httpBody(code, "") }
     }

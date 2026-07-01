@@ -7,18 +7,23 @@ struct CryptVaultApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ZStack {
-                ContentView()
-                if !lock.unlocked { LockScreen(lock: lock) }
-            }
-            .task { lock.authenticate() }
-            .onChange(of: phase) { newPhase in
-                switch newPhase {
-                case .active:     lock.authenticate()
-                case .background: lock.lockIfNeeded()
-                default:          break
+            ContentView()
+                .privacyShield()
+                .environmentObject(lock)
+                .task { lock.authenticate() }
+                .onChange(of: phase) { newPhase in
+                    switch newPhase {
+                    case .active:
+                        lock.authenticate()
+                    case .background:
+                        lock.lockIfNeeded()
+                        // Plaintext media temp files never outlive the foreground session,
+                        // whether or not the app lock is enabled.
+                        BackupViewModel.purgeAllVideoTemps()
+                    default:
+                        break
+                    }
                 }
-            }
         }
         #if os(macOS)
         .defaultSize(width: 1280, height: 772)

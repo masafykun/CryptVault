@@ -64,6 +64,7 @@ final class BackupViewModel: ObservableObject {
     private let auth = DriveAuth()
     private var token: OAuthToken?
     private var refreshTask: Task<OAuthToken?, Never>?   // dedup concurrent refreshes
+    private var lockObserver: NSObjectProtocol?          // wipes decrypted state on app lock
 
     /// A currently-valid access token, refreshing (once, shared) if the stored one has expired.
     /// Returns nil and flips `isConnected` off if there's no token / refresh fails — that makes
@@ -102,11 +103,34 @@ final class BackupViewModel: ObservableObject {
         }
         reloadConnection()
         Self.purgeTempDir()   // remove decrypted videos left over from a previous run
+        lockObserver = NotificationCenter.default.addObserver(
+            forName: .cryptVaultDidLock, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.wipeSensitiveState() }
+        }
     }
 
-    private var cryptEngine: RcloneCrypt?   // derived ONCE per refresh — scrypt is expensive
+    deinit {
+        if let o = lockObserver { NotificationCenter.default.removeObserver(o) }
+    }
 
-    /// Derive the crypt keys once (off the main thread) and cache the engine for reuse.
+    /// Drop key material and decrypted artifacts when the app locks: the derived keys, the
+    /// thumbnail cache, decrypted media files on disk, and the open viewer. The (already
+    /// name-decrypted) file list stays so the vault reopens instantly after unlock; keys are
+    /// re-derived lazily on the next decrypt.
+    private func wipeSensitiveState() {
+        wipeGeneration &+= 1
+        cryptEngine = nil
+        cryptTask = nil
+        thumbCache = [:]; thumbOrder = []
+        clearVideoTemps()
+        selected = nil          // dismisses the full-screen viewer (it renders decrypted content)
+    }
+
+    private var cryptEngine: RcloneCrypt?               // derived once and cached — scrypt is expensive
+    private var cryptTask: Task<RcloneCrypt?, Never>?   // dedup concurrent derivations
+    private var wipeGeneration = 0                      // invalidates derivations racing a lock
+
+    /// Derive the crypt keys (off the main thread) and cache the engine for reuse.
     /// A brand-new *local* vault has no keys yet, so we generate a strong random key and store it
     /// on-device — this makes local vaults usable with zero setup while keeping the keys portable
     /// (reveal them in Settings to reuse the same vault on another device or a WebDAV server).
@@ -114,16 +138,42 @@ final class BackupViewModel: ObservableObject {
         var pw = secrets.cryptPassword(profile: profileID), salt = secrets.cryptSalt(profile: profileID)
         if pw.isEmpty, backendKind == .local {
             pw = Self.randomKey(); salt = Self.randomKey()
-            secrets.saveCryptKeys(profile: profileID, password: pw, salt: salt)
+            // If the Keychain refused the write, DO NOT encrypt anything with the unsaved key —
+            // data encrypted under a key that vanishes on relaunch is unrecoverable.
+            guard secrets.saveCryptKeys(profile: profileID, password: pw, salt: salt) else {
+                cryptEngine = nil
+                status = "暗号キーを保存できませんでした（Keychainエラー）。安全のため処理を中止しました"
+                return
+            }
         }
         guard !pw.isEmpty else { cryptEngine = nil; return }
-        cryptEngine = await Self.deriveCrypt(pw: pw, salt: salt)
+        let task: Task<RcloneCrypt?, Never>
+        let isOwner: Bool
+        if let running = cryptTask {
+            task = running; isOwner = false
+        } else {
+            task = Task { await Self.deriveCrypt(pw: pw, salt: salt) }
+            cryptTask = task; isOwner = true
+        }
+        let gen = wipeGeneration
+        let engine = await task.value
+        if isOwner { cryptTask = nil }
+        guard gen == wipeGeneration else { return }   // locked while deriving — stay wiped
+        cryptEngine = engine
+    }
+
+    /// Cheap variant for read paths (thumbnails/viewer): derive only if no engine is cached,
+    /// e.g. after an app-lock wipe.
+    private func ensureCrypt() async {
+        if cryptEngine == nil { await makeCryptIfNeeded() }
     }
 
     /// 32-hex-char (128-bit) random string for an auto-generated local vault key.
     static func randomKey() -> String {
         var bytes = [UInt8](repeating: 0, count: 16)
-        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        // A failed CSPRNG must never silently become an all-zero vault key.
+        precondition(status == errSecSuccess, "SecRandomCopyBytes failed: \(status)")
         return bytes.map { String(format: "%02x", $0) }.joined()
     }
 
@@ -325,6 +375,7 @@ final class BackupViewModel: ObservableObject {
     func thumbnail(for file: DriveFile) async -> PlatformImage? {
         let id = file.id
         if let cached = thumbCache[id] { return cached }
+        await ensureCrypt()   // re-derive lazily after an app-lock wipe
         guard let c = cryptEngine, let cfg = await backendConfig() else { return nil }
         await limiter.wait()
         let img: PlatformImage?
@@ -358,6 +409,7 @@ final class BackupViewModel: ObservableObject {
     func videoURL(for file: DriveFile) async -> URL? {
         let id = file.id
         if let u = videoTempURLs[id], FileManager.default.fileExists(atPath: u.path) { return u }
+        await ensureCrypt()
         guard let c = cryptEngine, let cfg = await backendConfig() else { return nil }
         let ext = file.fileExtension.isEmpty ? "mp4" : file.fileExtension
         guard let url = await Self.decryptToTemp(file: file, cfg: cfg, crypt: c, ext: ext) else { return nil }
@@ -381,6 +433,7 @@ final class BackupViewModel: ObservableObject {
 
     /// Full-resolution decrypted image for the viewer (decoded off the main thread).
     func fullImage(for file: DriveFile) async -> PlatformImage? {
+        await ensureCrypt()
         guard let c = cryptEngine, let cfg = await backendConfig() else { return nil }
         return await Self.fetchFull(file: file, cfg: cfg, crypt: c)
     }
@@ -412,8 +465,16 @@ final class BackupViewModel: ObservableObject {
         try? FileManager.default.removeItem(at: mediaTempDir)
     }
 
+    /// Remove every decrypted media temp file, app-wide. Called when the app backgrounds (and on
+    /// launch via init), so plaintext media never outlives the foreground session. Live view
+    /// models re-check file existence before reusing a cached temp URL, so this is always safe.
+    nonisolated static func purgeAllVideoTemps() {
+        purgeTempDir()
+    }
+
     /// Download + decrypt a whole file to a temp file on disk (needed because AVFoundation
     /// plays/thumbnails from a URL, not raw bytes). Extension is preserved for type inference.
+    /// The plaintext temp is written with the strongest file-protection class available.
     nonisolated private static func decryptToTemp(file: DriveFile, cfg: BackendConfig, crypt: RcloneCrypt, ext: String) async -> URL? {
         guard let blob = try? await Storage.download(file, cfg),
               let plain = try? crypt.decryptContent([UInt8](blob)) else { return nil }
@@ -421,7 +482,12 @@ final class BackupViewModel: ObservableObject {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let safe = file.id.replacingOccurrences(of: "/", with: "_")   // WebDAV ids contain "/"
         let url = dir.appendingPathComponent("\(safe).\(ext)")
-        do { try Data(plain).write(to: url, options: .atomic); return url }
+        #if os(iOS)
+        let options: Data.WritingOptions = [.atomic, .completeFileProtection]
+        #else
+        let options: Data.WritingOptions = [.atomic]
+        #endif
+        do { try Data(plain).write(to: url, options: options); return url }
         catch { return nil }
     }
 
