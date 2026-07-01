@@ -64,6 +64,12 @@ struct SecretsStore {
     }
 
     func saveToken(_ t: OAuthToken) {
+        // Never downgrade a still-valid write-scoped token to a lesser-scoped one. This is the
+        // last line of defense against token-refresh races (a background tab refreshing an older
+        // readonly token) clobbering a freshly-granted write token in the Keychain.
+        if let existing = loadToken(), existing.isValid, existing.canWrite, !t.canWrite {
+            return
+        }
         if let d = try? JSONEncoder().encode(t), let s = String(data: d, encoding: .utf8) {
             KeychainStore.set(s, for: SecretKey.oauthToken)
         }
