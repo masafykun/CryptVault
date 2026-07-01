@@ -345,7 +345,7 @@ final class BackupViewModel: ObservableObject {
     nonisolated private static func fetchThumbnail(id: String, token: OAuthToken, crypt: RcloneCrypt) async -> PlatformImage? {
         guard let blob = try? await DriveClient(accessToken: token.accessToken).downloadMedia(fileID: id),
               let plain = try? crypt.decryptContent([UInt8](blob)) else { return nil }
-        return downsample(Data(plain), maxPixel: 300)
+        return downsample(Data(plain), maxPixel: 400)
     }
 
     nonisolated private static func fetchFull(id: String, token: OAuthToken, crypt: RcloneCrypt) async -> PlatformImage? {
@@ -378,7 +378,7 @@ final class BackupViewModel: ObservableObject {
         let asset = AVURLAsset(url: url)
         let gen = AVAssetImageGenerator(asset: asset)
         gen.appliesPreferredTrackTransform = true
-        gen.maximumSize = CGSize(width: maxPixel, height: maxPixel)
+        gen.maximumSize = CGSize(width: 400, height: 400)
         let time = CMTime(seconds: 0.1, preferredTimescale: 600)
         guard let cg = try? await gen.image(at: time).image else { return nil }
         return PlatformImage.fromCG(cg)

@@ -109,16 +109,43 @@ struct VaultView: View {
     }
 }
 
-/// Sort-order picker used in both the folder list and the grid toolbars.
+/// Thumbnail tile size (grid density), persisted in UserDefaults.
+enum ThumbSize: String, CaseIterable, Identifiable {
+    case small, medium, large, xlarge
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .small: return "小"
+        case .medium: return "中"
+        case .large: return "大"
+        case .xlarge: return "特大"
+        }
+    }
+    /// Minimum tile width fed to the adaptive grid.
+    var minWidth: CGFloat {
+        switch self {
+        case .small: return 80
+        case .medium: return 120
+        case .large: return 170
+        case .xlarge: return 240
+        }
+    }
+}
+
+/// View-options menu (sort order + thumbnail size), used in the folder list and grid toolbars.
 struct SortMenu: View {
     @ObservedObject var vm: BackupViewModel
+    @AppStorage("thumbSize") private var thumbSizeRaw = ThumbSize.medium.rawValue
     var body: some View {
         Menu {
             Picker("並び順", selection: $vm.sortOrder) {
                 ForEach(SortOrder.allCases) { Text($0.label).tag($0) }
             }
+            Picker("サムネの大きさ", selection: $thumbSizeRaw) {
+                ForEach(ThumbSize.allCases) { Text($0.label).tag($0.rawValue) }
+            }
         } label: {
-            Image(systemName: "arrow.up.arrow.down")
+            Image(systemName: "slider.horizontal.3")
         }
     }
 }
@@ -179,13 +206,15 @@ struct FolderGridView: View {
     let dir: String
     @ObservedObject var vm: BackupViewModel
     @State private var pendingDelete: DriveFile?
+    @AppStorage("thumbSize") private var thumbSizeRaw = ThumbSize.medium.rawValue
 
     private var files: [DriveFile] { vm.sections.first { $0.dir == dir }?.files ?? [] }
     private var title: String { vm.sections.first { $0.dir == dir }?.displayName ?? dir }
+    private var thumbMin: CGFloat { (ThumbSize(rawValue: thumbSizeRaw) ?? .medium).minWidth }
 
     var body: some View {
         ScrollView {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 2)], spacing: 2) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: thumbMin), spacing: 2)], spacing: 2) {
                 ForEach(files, id: \.id) { f in
                     ThumbCell(file: f, load: { await vm.thumbnail(for: $0) },
                               onTap: { vm.selected = f },
