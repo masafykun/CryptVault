@@ -1,6 +1,6 @@
-# 🔐 CryptVault (iOS)
+# 🔐 CryptVault (iOS / macOS)
 
-> rclone `crypt` で暗号化した Google Drive バックアップを、iPhone 上でそのまま閲覧・復号する。
+> rclone `crypt` で暗号化した Google Drive バックアップを、iPhone / Mac 上でそのまま閲覧・復号する。
 
 [rclone](https://rclone.org) の `crypt` はクライアントサイド暗号なので、Google Drive 側には
 中身もファイル名もスクランブルされた暗号文しか置かれません。CryptVault は Drive に接続し、
@@ -8,7 +8,7 @@
 完結し、鍵は一切外に出ません。Google が持つのは暗号文だけです。復号エンジンは
 [RcloneCryptKit](https://github.com/masafykun/RcloneCryptKit) を利用しています。
 
-![Platform](https://img.shields.io/badge/platform-iOS%2016%2B-blue?style=flat-square) ![Swift](https://img.shields.io/badge/Swift-5-orange?style=flat-square) ![SwiftUI](https://img.shields.io/badge/UI-SwiftUI-green?style=flat-square) ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)
+![Platform](https://img.shields.io/badge/platform-iOS%2016%2B%20%7C%20macOS%2013%2B-blue?style=flat-square) ![Swift](https://img.shields.io/badge/Swift-5-orange?style=flat-square) ![SwiftUI](https://img.shields.io/badge/UI-SwiftUI-green?style=flat-square) ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)
 
 🔗 **復号エンジン: [RcloneCryptKit](https://github.com/masafykun/RcloneCryptKit)**
 
@@ -83,10 +83,15 @@ export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.bareRepository GIT_CONFIG_VALUE_
 # 3. Xcode プロジェクトを生成して開く
 cd CryptVault
 xcodegen generate
-open CryptVault.xcodeproj   # シミュレータ or 実機でビルド＆実行
+open CryptVault.xcodeproj   # スキームを選んでビルド＆実行
 ```
 
+- **iOS**：スキーム `CryptVault`（シミュレータ or 実機）
+- **macOS**：スキーム `CryptVaultMac`（ネイティブ SwiftUI アプリ。Catalyst ではなく macOS
+  ターゲット。VLCKit の macOS スライスで webm/mkv/avi 再生・サムネも動作）
+
 依存（RcloneCryptKit / VLCKit）は Swift Package Manager が GitHub から自動解決します。
+iOS と macOS でソース（`Sources/`）を共有し、差分は `#if os(macOS)` で分岐しています。
 
 ---
 
