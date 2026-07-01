@@ -6,6 +6,8 @@ struct Profile: Identifiable, Codable, Hashable {
     var id: String
     var name: String
     var folderName: String
+    var kind: BackendKind = .googleDrive   // default keeps existing profiles on Google Drive
+    var webdavURL: String = ""             // WebDAV base URL (e.g. https://u123.your-storagebox.de)
 }
 
 /// Stores the list of profiles + which one is active. Profile metadata lives in UserDefaults;
@@ -33,6 +35,10 @@ final class ProfileStore: ObservableObject {
         guard let data = UserDefaults.standard.data(forKey: profilesKey),
               let list = try? JSONDecoder().decode([Profile].self, from: data) else { return [] }
         return list
+    }
+
+    static func profile(forID id: String) -> Profile? {
+        loadProfiles().first { $0.id == id }
     }
 
     /// Live folder lookup by id (so folder edits take effect without recreating a view model).
@@ -78,6 +84,7 @@ final class ProfileStore: ObservableObject {
     func remove(_ p: Profile) {
         profiles.removeAll { $0.id == p.id }
         secrets.deleteCryptKeys(profile: p.id)
+        secrets.deleteWebDAV(profile: p.id)
         if activeID == p.id { activeID = profiles.first?.id ?? "" }
         persist()
     }

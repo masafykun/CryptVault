@@ -57,6 +57,18 @@ struct SecretsStore {
         KeychainStore.delete("crypt.salt.\(id)")
     }
 
+    // Per-profile WebDAV credentials.
+    func webdavUser(profile id: String) -> String { KeychainStore.get("webdav.user.\(id)") ?? "" }
+    func webdavPass(profile id: String) -> String { KeychainStore.get("webdav.pass.\(id)") ?? "" }
+    func saveWebDAV(profile id: String, user: String, pass: String) {
+        KeychainStore.set(user, for: "webdav.user.\(id)")
+        KeychainStore.set(pass, for: "webdav.pass.\(id)")
+    }
+    func deleteWebDAV(profile id: String) {
+        KeychainStore.delete("webdav.user.\(id)")
+        KeychainStore.delete("webdav.pass.\(id)")
+    }
+
     func loadToken() -> OAuthToken? {
         guard let s = KeychainStore.get(SecretKey.oauthToken),
               let d = s.data(using: .utf8) else { return nil }

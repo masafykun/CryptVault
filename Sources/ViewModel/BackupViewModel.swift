@@ -35,6 +35,25 @@ final class BackupViewModel: ObservableObject {
     /// folder edits in Settings take effect on the next refresh).
     var rootFolderName: String { ProfileStore.folderName(forID: profileID) }
 
+    private var profile: Profile? { ProfileStore.profile(forID: profileID) }
+    private var backendKind: BackendKind { profile?.kind ?? .googleDrive }
+
+    /// Build the storage config for this profile's backend (Drive: a valid token; WebDAV: creds).
+    private func backendConfig() async -> BackendConfig? {
+        switch backendKind {
+        case .googleDrive:
+            guard let tok = await ensureValidToken() else { return nil }
+            return .drive(accessToken: tok.accessToken, folderName: rootFolderName)
+        case .webdav:
+            guard let p = profile, !p.webdavURL.isEmpty else { isConnected = false; return nil }
+            let user = secrets.webdavUser(profile: profileID)
+            let pass = secrets.webdavPass(profile: profileID)
+            guard !user.isEmpty else { isConnected = false; return nil }
+            isConnected = true
+            return .webdav(baseURL: p.webdavURL, user: user, pass: pass, rootPath: "/" + rootFolderName)
+        }
+    }
+
     private let secrets = SecretsStore()
     private let auth = DriveAuth()
     private var token: OAuthToken?
@@ -72,11 +91,10 @@ final class BackupViewModel: ObservableObject {
 
     init(profileID: String) {
         self.profileID = profileID
-        token = secrets.loadToken()
-        isConnected = token != nil
         if let raw = UserDefaults.standard.string(forKey: "sortOrder"), let o = SortOrder(rawValue: raw) {
             sortOrder = o
         }
+        reloadConnection()
         Self.purgeTempDir()   // remove decrypted videos left over from a previous run
     }
 
@@ -99,11 +117,15 @@ final class BackupViewModel: ObservableObject {
         return out
     }
 
-    /// Re-read the shared Google token from the Keychain (e.g. after connecting in Settings or
-    /// in another tab). Cheap; called when a vault tab appears.
+    /// Refresh `isConnected` for this profile's backend (Drive: has a token; WebDAV: has creds).
+    /// Cheap; called when a vault tab appears.
     func reloadConnection() {
-        token = secrets.loadToken()
-        isConnected = token != nil
+        switch backendKind {
+        case .googleDrive:
+            token = secrets.loadToken(); isConnected = token != nil
+        case .webdav:
+            isConnected = !(profile?.webdavURL ?? "").isEmpty && !secrets.webdavUser(profile: profileID).isEmpty
+        }
     }
 
     func connect() async {
@@ -121,19 +143,13 @@ final class BackupViewModel: ObservableObject {
     }
 
     func loadList() async {
-        guard token != nil else { status = "未接続です"; return }
         isBusy = true; defer { isBusy = false }
-        guard let tok = await ensureValidToken() else { return }
+        guard let cfg = await backendConfig() else { status = "接続情報が未設定です（⚙️設定）"; return }
         await makeCryptIfNeeded()
         guard let c = cryptEngine else { status = "暗号パスワード未設定（⚙️設定から入力）"; return }
         do {
             status = "一覧取得中…"
-            let client = DriveClient(accessToken: tok.accessToken)
-            let folder = rootFolderName
-            guard let rootID = try await client.findFolderID(named: folder) else {
-                status = "「\(folder)」フォルダが見つかりません"; return
-            }
-            let raw = try await client.walk(folderID: rootID)
+            let raw = try await Storage.list(cfg)
             let found = await Self.decryptNames(raw, crypt: c)
             allFiles = found
             files = found
@@ -141,6 +157,8 @@ final class BackupViewModel: ObservableObject {
             thumbCache = [:]; thumbOrder = []
             clearVideoTemps()
             status = "\(files.count) 件 / \(sections.count) フォルダ"
+        } catch let DriveError.httpBody(code, body) {
+            status = "取得失敗(\(code)): \(body.replacingOccurrences(of: "\n", with: " ").prefix(140))"
         } catch DriveError.http(401) {
             isConnected = false
             status = "認証が切れました。「接続」で再ログインしてください"
@@ -154,42 +172,27 @@ final class BackupViewModel: ObservableObject {
     /// Encrypt the given local files and upload them into `dir` (a decrypted path relative to the
     /// vault root; "" = root). Creates encrypted intermediate folders as needed, then refreshes.
     func addFiles(_ urls: [URL], toDir dir: String) async {
-        reloadConnection()   // pick up a freshly-granted (write-scoped) token from Settings
-        guard let tok = await ensureValidToken() else { return }
+        reloadConnection()
+        guard let cfg = await backendConfig() else { status = "接続情報が未設定です（⚙️設定）"; return }
         await makeCryptIfNeeded()
         guard let c = cryptEngine else { status = "暗号キー未設定（⚙️設定から入力）"; return }
         isBusy = true; defer { isBusy = false }
-        let client = DriveClient(accessToken: tok.accessToken)
         do {
-            let folder = rootFolderName
-            let rootID: String
-            if let found = try await client.findFolderID(named: folder) {
-                rootID = found
-            } else {
-                rootID = try await client.createFolder(name: folder, parentID: nil)   // new vault root
-                status = "Vaultフォルダ「\(folder)」を作成しました"
-            }
-            let targetID = try await Self.ensureEncryptedDir(dir, under: rootID, crypt: c, client: client)
             var done = 0
             for url in urls {
                 let ok = url.startAccessingSecurityScopedResource()
                 let cipher = await Self.readAndEncrypt(url: url, crypt: c)
                 if ok { url.stopAccessingSecurityScopedResource() }
                 guard let cipher else { continue }
-                let encName = c.encryptName(url.lastPathComponent)
-                _ = try await client.uploadFile(name: encName, parentID: targetID, data: Data(cipher))
+                let encRel = encryptedRelPath(dir: dir, name: url.lastPathComponent, crypt: c)
+                try await Storage.upload(encryptedRelativePath: encRel, data: Data(cipher), cfg)
                 done += 1
                 status = "アップロード中… \(done)/\(urls.count)"
             }
             status = "\(done) 件アップロードしました"
             await loadList()
         } catch let DriveError.httpBody(code, body) {
-            let w = token?.canWrite ?? false
-            let msg = body.replacingOccurrences(of: "\n", with: " ")
-            status = "失敗(\(code), write=\(w)): \(msg.prefix(140))"
-        } catch DriveError.http(401) {
-            isConnected = false
-            status = "認証が切れました。「接続」で再ログインしてください"
+            status = "失敗(\(code)): \(body.replacingOccurrences(of: "\n", with: " ").prefix(140))"
         } catch {
             status = "アップロード失敗: \(error.localizedDescription)"
         }
@@ -198,43 +201,35 @@ final class BackupViewModel: ObservableObject {
     /// Encrypt and upload items picked from the photo library (PhotosPicker) into `dir`.
     func addPhotos(_ items: [PhotosPickerItem], toDir dir: String) async {
         reloadConnection()
-        guard let tok = await ensureValidToken() else { return }
+        guard let cfg = await backendConfig() else { status = "接続情報が未設定です（⚙️設定）"; return }
         await makeCryptIfNeeded()
         guard let c = cryptEngine else { status = "暗号キー未設定（⚙️設定から入力）"; return }
         isBusy = true; defer { isBusy = false }
-        let client = DriveClient(accessToken: tok.accessToken)
         do {
-            let folder = rootFolderName
-            let rootID: String
-            if let found = try await client.findFolderID(named: folder) {
-                rootID = found
-            } else {
-                rootID = try await client.createFolder(name: folder, parentID: nil)
-                status = "Vaultフォルダ「\(folder)」を作成しました"
-            }
-            let targetID = try await Self.ensureEncryptedDir(dir, under: rootID, crypt: c, client: client)
             var done = 0
             for (i, item) in items.enumerated() {
                 guard let data = try? await item.loadTransferable(type: Data.self) else { continue }
                 let ext = item.supportedContentTypes.first?.preferredFilenameExtension ?? "dat"
                 let name = Self.photoName(index: i, ext: ext)
                 let cipher = await Self.encrypt(data, crypt: c)
-                let encName = c.encryptName(name)
-                _ = try await client.uploadFile(name: encName, parentID: targetID, data: Data(cipher))
+                let encRel = encryptedRelPath(dir: dir, name: name, crypt: c)
+                try await Storage.upload(encryptedRelativePath: encRel, data: Data(cipher), cfg)
                 done += 1
                 status = "アップロード中… \(done)/\(items.count)"
             }
             status = "\(done) 件アップロードしました"
             await loadList()
         } catch let DriveError.httpBody(code, body) {
-            let w = token?.canWrite ?? false
-            status = "失敗(\(code), write=\(w)): \(body.replacingOccurrences(of: "\n", with: " ").prefix(140))"
-        } catch DriveError.http(401) {
-            isConnected = false
-            status = "認証が切れました。「接続」で再ログインしてください"
+            status = "失敗(\(code)): \(body.replacingOccurrences(of: "\n", with: " ").prefix(140))"
         } catch {
             status = "アップロード失敗: \(error.localizedDescription)"
         }
+    }
+
+    /// Encrypted path of `name` inside decrypted `dir`, relative to the vault root ("encA/encB").
+    private func encryptedRelPath(dir: String, name: String, crypt c: RcloneCrypt) -> String {
+        let decRel = dir.isEmpty ? name : dir + "/" + name
+        return c.encryptName(decRel)
     }
 
     nonisolated private static func encrypt(_ data: Data, crypt c: RcloneCrypt) async -> [UInt8] {
@@ -246,40 +241,21 @@ final class BackupViewModel: ObservableObject {
         return "IMG_\(f.string(from: Date()))_\(index).\(ext)"
     }
 
-    /// Move a file to Drive trash (recoverable) and drop it from the local model.
+    /// Delete a file (Drive: trash/recoverable, WebDAV: permanent) and drop it from the model.
     func deleteFile(_ file: DriveFile) async {
-        reloadConnection()
-        guard let tok = await ensureValidToken() else { return }
-        let client = DriveClient(accessToken: tok.accessToken)
+        guard let cfg = await backendConfig() else { return }
         do {
-            try await client.trash(fileID: file.id)
+            try await Storage.delete(file, cfg)
             allFiles.removeAll { $0.id == file.id }
             files = allFiles
             applySort()
             thumbCache[file.id] = nil
-            status = "「\(file.displayName)」をゴミ箱へ移動しました"
+            status = "「\(file.displayName)」を削除しました"
         } catch let DriveError.httpBody(code, body) {
-            let w = token?.canWrite ?? false
-            status = "削除失敗(\(code), write=\(w)): \(body.replacingOccurrences(of: "\n", with: " ").prefix(140))"
+            status = "削除失敗(\(code)): \(body.replacingOccurrences(of: "\n", with: " ").prefix(140))"
         } catch {
             status = "削除失敗: \(error.localizedDescription)"
         }
-    }
-
-    /// Resolve (creating if needed) the Drive folder id for a decrypted directory path, encrypting
-    /// each segment. "" returns the vault root id.
-    nonisolated private static func ensureEncryptedDir(_ dir: String, under rootID: String,
-                                                       crypt c: RcloneCrypt, client: DriveClient) async throws -> String {
-        var parent = rootID
-        for seg in dir.split(separator: "/", omittingEmptySubsequences: true) {
-            let enc = c.encryptName(String(seg))
-            if let existing = try await client.findFolderID(named: enc, parent: parent) {
-                parent = existing
-            } else {
-                parent = try await client.createFolder(name: enc, parentID: parent)
-            }
-        }
-        return parent
     }
 
     /// Read a local file and encrypt it — off the main actor (files can be large).
@@ -327,7 +303,7 @@ final class BackupViewModel: ObservableObject {
     func thumbnail(for file: DriveFile) async -> PlatformImage? {
         let id = file.id
         if let cached = thumbCache[id] { return cached }
-        guard let c = cryptEngine, let token = await ensureValidToken() else { return nil }
+        guard let c = cryptEngine, let cfg = await backendConfig() else { return nil }
         await limiter.wait()
         let img: PlatformImage?
         if file.usesAVFoundation {
@@ -346,7 +322,7 @@ final class BackupViewModel: ObservableObject {
                 img = nil
             }
         } else {
-            img = await Self.fetchThumbnail(id: id, token: token, crypt: c)
+            img = await Self.fetchThumbnail(file: file, cfg: cfg, crypt: c)
         }
         await limiter.signal()
         if let img { cacheThumbnail(img, for: id) }
@@ -360,9 +336,9 @@ final class BackupViewModel: ObservableObject {
     func videoURL(for file: DriveFile) async -> URL? {
         let id = file.id
         if let u = videoTempURLs[id], FileManager.default.fileExists(atPath: u.path) { return u }
-        guard let c = cryptEngine, let token = await ensureValidToken() else { return nil }
+        guard let c = cryptEngine, let cfg = await backendConfig() else { return nil }
         let ext = file.fileExtension.isEmpty ? "mp4" : file.fileExtension
-        guard let url = await Self.decryptToTemp(id: id, token: token, crypt: c, ext: ext) else { return nil }
+        guard let url = await Self.decryptToTemp(file: file, cfg: cfg, crypt: c, ext: ext) else { return nil }
         cacheVideoTemp(url, for: id)
         return url
     }
@@ -383,8 +359,8 @@ final class BackupViewModel: ObservableObject {
 
     /// Full-resolution decrypted image for the viewer (decoded off the main thread).
     func fullImage(for file: DriveFile) async -> PlatformImage? {
-        guard let c = cryptEngine, let token = await ensureValidToken() else { return nil }
-        return await Self.fetchFull(id: file.id, token: token, crypt: c)
+        guard let c = cryptEngine, let cfg = await backendConfig() else { return nil }
+        return await Self.fetchFull(file: file, cfg: cfg, crypt: c)
     }
 
     private func cacheThumbnail(_ img: PlatformImage, for id: String) {
@@ -394,14 +370,14 @@ final class BackupViewModel: ObservableObject {
     }
 
     // Heavy work below is `nonisolated` so it runs OFF the main actor — scrolling stays smooth.
-    nonisolated private static func fetchThumbnail(id: String, token: OAuthToken, crypt: RcloneCrypt) async -> PlatformImage? {
-        guard let blob = try? await DriveClient(accessToken: token.accessToken).downloadMedia(fileID: id),
+    nonisolated private static func fetchThumbnail(file: DriveFile, cfg: BackendConfig, crypt: RcloneCrypt) async -> PlatformImage? {
+        guard let blob = try? await Storage.download(file, cfg),
               let plain = try? crypt.decryptContent([UInt8](blob)) else { return nil }
         return downsample(Data(plain), maxPixel: 400)
     }
 
-    nonisolated private static func fetchFull(id: String, token: OAuthToken, crypt: RcloneCrypt) async -> PlatformImage? {
-        guard let blob = try? await DriveClient(accessToken: token.accessToken).downloadMedia(fileID: id),
+    nonisolated private static func fetchFull(file: DriveFile, cfg: BackendConfig, crypt: RcloneCrypt) async -> PlatformImage? {
+        guard let blob = try? await Storage.download(file, cfg),
               let plain = try? crypt.decryptContent([UInt8](blob)) else { return nil }
         return PlatformImage(data: Data(plain))
     }
@@ -416,12 +392,13 @@ final class BackupViewModel: ObservableObject {
 
     /// Download + decrypt a whole file to a temp file on disk (needed because AVFoundation
     /// plays/thumbnails from a URL, not raw bytes). Extension is preserved for type inference.
-    nonisolated private static func decryptToTemp(id: String, token: OAuthToken, crypt: RcloneCrypt, ext: String) async -> URL? {
-        guard let blob = try? await DriveClient(accessToken: token.accessToken).downloadMedia(fileID: id),
+    nonisolated private static func decryptToTemp(file: DriveFile, cfg: BackendConfig, crypt: RcloneCrypt, ext: String) async -> URL? {
+        guard let blob = try? await Storage.download(file, cfg),
               let plain = try? crypt.decryptContent([UInt8](blob)) else { return nil }
         let dir = mediaTempDir
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let url = dir.appendingPathComponent("\(id).\(ext)")
+        let safe = file.id.replacingOccurrences(of: "/", with: "_")   // WebDAV ids contain "/"
+        let url = dir.appendingPathComponent("\(safe).\(ext)")
         do { try Data(plain).write(to: url, options: .atomic); return url }
         catch { return nil }
     }

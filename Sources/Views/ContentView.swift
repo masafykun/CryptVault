@@ -85,15 +85,19 @@ struct VaultView: View {
         if !vm.sections.isEmpty { SortMenu(vm: vm) }
         if vm.isConnected {
             Button("更新") { Task { await vm.loadList() } }
-        } else {
+        } else if profile.kind == .googleDrive {
             Button("接続") { Task { await vm.connect() } }
+        } else {
+            Button("設定") { showSettings = true }           // WebDAV: creds are entered in Settings
         }
     }
 
     private var emptyState: some View {
         VStack(spacing: 16) {
             Image(systemName: "lock.doc").font(.system(size: 48)).foregroundStyle(.secondary)
-            Text(vm.isConnected ? "「更新」でこのVaultの一覧を取得" : "「接続」でGoogle Driveに接続")
+            Text(vm.isConnected ? "「更新」でこのVaultの一覧を取得"
+                 : (profile.kind == .googleDrive ? "「接続」でGoogle Driveに接続"
+                                                  : "⚙️設定でWebDAVの接続情報を入力"))
                 .foregroundStyle(.secondary).multilineTextAlignment(.center)
             if vm.isBusy { ProgressView() }
         }.padding()
