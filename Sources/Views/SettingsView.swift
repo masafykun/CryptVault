@@ -113,7 +113,9 @@ struct SettingsView: View {
         do {
             let t = try await DriveAuth().authorize()
             secrets.saveToken(t)
-            authStatus = "接続しました。各 Vault で「更新」してください"
+            authStatus = t.canWrite
+                ? "✅ 接続OK（書き込み権限あり）。各 Vault で「更新」/アップロードできます"
+                : "⚠️ 読み取り権限のみ許可されました。許可=[\(t.grantedScope ?? "?")]。数分待ってから、Googleのアプリ連携を解除→もう一度再接続してください"
         } catch DriveAuthError.noClientID {
             authStatus = "クライアントID を入力してください"
         } catch {

@@ -11,7 +11,14 @@ struct OAuthToken: Codable {
     var accessToken: String
     var refreshToken: String?
     var expiry: Date
+    var grantedScope: String? = nil          // space-separated scopes Google actually granted
     var isValid: Bool { Date() < expiry.addingTimeInterval(-60) }
+
+    /// True when Google granted full read/write drive access (needed for upload/delete).
+    var canWrite: Bool {
+        (grantedScope ?? "").split(separator: " ").map(String.init)
+            .contains("https://www.googleapis.com/auth/drive")
+    }
 }
 
 enum DriveAuthError: Error, LocalizedError {
@@ -80,6 +87,9 @@ final class DriveAuth: NSObject {
                 else { cont.resume(throwing: error ?? DriveAuthError.cancelled) }
             }
             s.presentationContextProvider = self
+            // Fresh session each time: avoids silently reusing an older (readonly) grant via SSO,
+            // so newly-added scopes are actually presented and granted.
+            s.prefersEphemeralWebBrowserSession = true
             self.session = s
             if !s.start() { cont.resume(throwing: DriveAuthError.cancelled) }
         }
@@ -100,11 +110,12 @@ final class DriveAuth: NSObject {
         ]).data(using: .utf8)
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard (resp as? HTTPURLResponse)?.statusCode == 200 else { throw DriveAuthError.badResponse }
-        struct Resp: Codable { let access_token: String; let refresh_token: String?; let expires_in: Double? }
+        struct Resp: Codable { let access_token: String; let refresh_token: String?; let expires_in: Double?; let scope: String? }
         let r = try JSONDecoder().decode(Resp.self, from: data)
         return OAuthToken(accessToken: r.access_token,
                           refreshToken: r.refresh_token ?? token.refreshToken,
-                          expiry: Date().addingTimeInterval(r.expires_in ?? 3500))
+                          expiry: Date().addingTimeInterval(r.expires_in ?? 3500),
+                          grantedScope: r.scope ?? token.grantedScope)
     }
 
     private func exchange(code: String) async throws -> OAuthToken {
@@ -119,10 +130,11 @@ final class DriveAuth: NSObject {
             "redirect_uri": redirectURI,
         ]).data(using: .utf8)
         let (data, _) = try await URLSession.shared.data(for: req)
-        struct Resp: Codable { let access_token: String; let refresh_token: String?; let expires_in: Double? }
+        struct Resp: Codable { let access_token: String; let refresh_token: String?; let expires_in: Double?; let scope: String? }
         let r = try JSONDecoder().decode(Resp.self, from: data)
         return OAuthToken(accessToken: r.access_token, refreshToken: r.refresh_token,
-                          expiry: Date().addingTimeInterval(r.expires_in ?? 3500))
+                          expiry: Date().addingTimeInterval(r.expires_in ?? 3500),
+                          grantedScope: r.scope)
     }
 
     // MARK: helpers

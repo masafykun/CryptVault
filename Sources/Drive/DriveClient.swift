@@ -2,7 +2,13 @@ import Foundation
 
 enum DriveError: Error, LocalizedError {
     case http(Int)
-    var errorDescription: String? { if case let .http(c) = self { return "Drive API HTTP \(c)" }; return nil }
+    case httpBody(Int, String)      // carries Google's error body for diagnosis
+    var errorDescription: String? {
+        switch self {
+        case .http(let c): return "Drive API HTTP \(c)"
+        case .httpBody(let c, let b): return "HTTP \(c): \(b)"
+        }
+    }
 }
 
 private extension Data {
@@ -64,7 +70,7 @@ struct DriveClient {
         req.httpBody = body
         let (respData, resp) = try await URLSession.shared.data(for: req)
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-        guard code == 200 else { throw DriveError.http(code) }
+        guard code == 200 else { throw DriveError.httpBody(code, String(data: respData, encoding: .utf8) ?? "") }
         struct R: Codable { let id: String }
         return try JSONDecoder().decode(R.self, from: respData).id
     }
@@ -81,7 +87,7 @@ struct DriveClient {
         req.httpBody = try JSONSerialization.data(withJSONObject: meta)
         let (respData, resp) = try await URLSession.shared.data(for: req)
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-        guard code == 200 else { throw DriveError.http(code) }
+        guard code == 200 else { throw DriveError.httpBody(code, String(data: respData, encoding: .utf8) ?? "") }
         struct R: Codable { let id: String }
         return try JSONDecoder().decode(R.self, from: respData).id
     }
@@ -93,9 +99,9 @@ struct DriveClient {
         req.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: ["trashed": true])
-        let (_, resp) = try await URLSession.shared.data(for: req)
+        let (respData, resp) = try await URLSession.shared.data(for: req)
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-        guard code == 200 else { throw DriveError.http(code) }
+        guard code == 200 else { throw DriveError.httpBody(code, String(data: respData, encoding: .utf8) ?? "") }
     }
 
     func downloadMedia(fileID: String) async throws -> Data {

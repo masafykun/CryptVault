@@ -43,8 +43,12 @@ final class BackupViewModel: ObservableObject {
     /// Returns nil and flips `isConnected` off if there's no token / refresh fails — that makes
     /// the "接続" button reappear so the user can re-login.
     private func ensureValidToken() async -> OAuthToken? {
+        // Always start from the latest stored token: Settings or another tab may have just saved a
+        // freshly-scoped token, and we must NOT refresh (and overwrite) a still-valid newer token
+        // with an older one held in this tab's memory.
+        token = secrets.loadToken()
         guard let t = token else { isConnected = false; return nil }
-        if t.isValid { return t }
+        if t.isValid { isConnected = true; return t }
         if let task = refreshTask { return await task.value }
         let task = Task { () -> OAuthToken? in try? await auth.refresh(t) }
         refreshTask = task
@@ -143,6 +147,7 @@ final class BackupViewModel: ObservableObject {
     /// Encrypt the given local files and upload them into `dir` (a decrypted path relative to the
     /// vault root; "" = root). Creates encrypted intermediate folders as needed, then refreshes.
     func addFiles(_ urls: [URL], toDir dir: String) async {
+        reloadConnection()   // pick up a freshly-granted (write-scoped) token from Settings
         guard let tok = await ensureValidToken() else { return }
         await makeCryptIfNeeded()
         guard let c = cryptEngine else { status = "暗号キー未設定（⚙️設定から入力）"; return }
@@ -171,8 +176,10 @@ final class BackupViewModel: ObservableObject {
             }
             status = "\(done) 件アップロードしました"
             await loadList()
-        } catch DriveError.http(403) {
-            status = "書き込み権限がありません。⚙️設定→Google再接続で許可してください"
+        } catch let DriveError.httpBody(code, body) {
+            let w = token?.canWrite ?? false
+            let msg = body.replacingOccurrences(of: "\n", with: " ")
+            status = "失敗(\(code), write=\(w)): \(msg.prefix(140))"
         } catch DriveError.http(401) {
             isConnected = false
             status = "認証が切れました。「接続」で再ログインしてください"
@@ -183,6 +190,7 @@ final class BackupViewModel: ObservableObject {
 
     /// Move a file to Drive trash (recoverable) and drop it from the local model.
     func deleteFile(_ file: DriveFile) async {
+        reloadConnection()
         guard let tok = await ensureValidToken() else { return }
         let client = DriveClient(accessToken: tok.accessToken)
         do {
@@ -192,8 +200,9 @@ final class BackupViewModel: ObservableObject {
             applySort()
             thumbCache[file.id] = nil
             status = "「\(file.displayName)」をゴミ箱へ移動しました"
-        } catch DriveError.http(403) {
-            status = "削除権限がありません。⚙️設定→Google再接続で許可してください"
+        } catch let DriveError.httpBody(code, body) {
+            let w = token?.canWrite ?? false
+            status = "削除失敗(\(code), write=\(w)): \(body.replacingOccurrences(of: "\n", with: " ").prefix(140))"
         } catch {
             status = "削除失敗: \(error.localizedDescription)"
         }
