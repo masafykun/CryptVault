@@ -1,6 +1,7 @@
 import SwiftUI
 import ImageIO
 import AVFoundation
+import PhotosUI
 import RcloneCryptKit
 
 @MainActor
@@ -192,6 +193,57 @@ final class BackupViewModel: ObservableObject {
         } catch {
             status = "アップロード失敗: \(error.localizedDescription)"
         }
+    }
+
+    /// Encrypt and upload items picked from the photo library (PhotosPicker) into `dir`.
+    func addPhotos(_ items: [PhotosPickerItem], toDir dir: String) async {
+        reloadConnection()
+        guard let tok = await ensureValidToken() else { return }
+        await makeCryptIfNeeded()
+        guard let c = cryptEngine else { status = "暗号キー未設定（⚙️設定から入力）"; return }
+        isBusy = true; defer { isBusy = false }
+        let client = DriveClient(accessToken: tok.accessToken)
+        do {
+            let folder = rootFolderName
+            let rootID: String
+            if let found = try await client.findFolderID(named: folder) {
+                rootID = found
+            } else {
+                rootID = try await client.createFolder(name: folder, parentID: nil)
+                status = "Vaultフォルダ「\(folder)」を作成しました"
+            }
+            let targetID = try await Self.ensureEncryptedDir(dir, under: rootID, crypt: c, client: client)
+            var done = 0
+            for (i, item) in items.enumerated() {
+                guard let data = try? await item.loadTransferable(type: Data.self) else { continue }
+                let ext = item.supportedContentTypes.first?.preferredFilenameExtension ?? "dat"
+                let name = Self.photoName(index: i, ext: ext)
+                let cipher = await Self.encrypt(data, crypt: c)
+                let encName = c.encryptName(name)
+                _ = try await client.uploadFile(name: encName, parentID: targetID, data: Data(cipher))
+                done += 1
+                status = "アップロード中… \(done)/\(items.count)"
+            }
+            status = "\(done) 件アップロードしました"
+            await loadList()
+        } catch let DriveError.httpBody(code, body) {
+            let w = token?.canWrite ?? false
+            status = "失敗(\(code), write=\(w)): \(body.replacingOccurrences(of: "\n", with: " ").prefix(140))"
+        } catch DriveError.http(401) {
+            isConnected = false
+            status = "認証が切れました。「接続」で再ログインしてください"
+        } catch {
+            status = "アップロード失敗: \(error.localizedDescription)"
+        }
+    }
+
+    nonisolated private static func encrypt(_ data: Data, crypt c: RcloneCrypt) async -> [UInt8] {
+        c.encryptContent([UInt8](data))
+    }
+
+    nonisolated private static func photoName(index: Int, ext: String) -> String {
+        let f = DateFormatter(); f.dateFormat = "yyyyMMdd_HHmmss"
+        return "IMG_\(f.string(from: Date()))_\(index).\(ext)"
     }
 
     /// Move a file to Drive trash (recoverable) and drop it from the local model.

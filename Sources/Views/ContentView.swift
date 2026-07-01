@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import PhotosUI
 
 /// App shell: one tab per profile (vault). Switching tabs flips between vaults; each keeps its
 /// own loaded state. A trailing "設定" tab manages profiles and global settings.
@@ -80,7 +81,7 @@ struct VaultView: View {
     }
 
     @ViewBuilder private var trailingActions: some View {
-        if vm.isConnected { AddFileButton(vm: vm, dir: "") }      // add to vault root
+        if vm.isConnected { AddButton(vm: vm, dir: "") }      // add to vault root
         if !vm.sections.isEmpty { SortMenu(vm: vm) }
         if vm.isConnected {
             Button("更新") { Task { await vm.loadList() } }
@@ -150,21 +151,36 @@ struct SortMenu: View {
     }
 }
 
-/// Toolbar "+" button: pick local files, encrypt them, and upload into `dir`.
-struct AddFileButton: View {
+/// Toolbar "+" menu: add from the photo library or from Files, encrypt, and upload into `dir`.
+struct AddButton: View {
     @ObservedObject var vm: BackupViewModel
     let dir: String
     @State private var importing = false
+    @State private var showPhotos = false
+    @State private var photoItems: [PhotosPickerItem] = []
 
     var body: some View {
-        Button { importing = true } label: { Image(systemName: "plus") }
-            .fileImporter(isPresented: $importing,
-                          allowedContentTypes: [.item],
-                          allowsMultipleSelection: true) { result in
-                if case .success(let urls) = result, !urls.isEmpty {
-                    Task { await vm.addFiles(urls, toDir: dir) }
-                }
+        Menu {
+            Button { showPhotos = true } label: { Label("写真から", systemImage: "photo") }
+            Button { importing = true } label: { Label("ファイルから", systemImage: "folder") }
+        } label: {
+            Image(systemName: "plus")
+        }
+        .fileImporter(isPresented: $importing,
+                      allowedContentTypes: [.item],
+                      allowsMultipleSelection: true) { result in
+            if case .success(let urls) = result, !urls.isEmpty {
+                Task { await vm.addFiles(urls, toDir: dir) }
             }
+        }
+        .photosPicker(isPresented: $showPhotos, selection: $photoItems,
+                      maxSelectionCount: 30, matching: .any(of: [.images, .videos]))
+        .onChange(of: photoItems) { items in
+            guard !items.isEmpty else { return }
+            let picked = items
+            photoItems = []
+            Task { await vm.addPhotos(picked, toDir: dir) }
+        }
     }
 }
 
@@ -228,7 +244,7 @@ struct FolderGridView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .toolbar {
-            ToolbarItem { AddFileButton(vm: vm, dir: dir) }
+            ToolbarItem { AddButton(vm: vm, dir: dir) }
             ToolbarItem { SortMenu(vm: vm) }
         }
         .confirmationDialog("このファイルを削除しますか？",
