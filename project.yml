@@ -30,16 +30,21 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
-        ITSAppUsesNonExemptEncryption: false
-        NSFaceIDUsageDescription: バックアップの閲覧をロック解除するために Face ID を使用します
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSFaceIDUsageDescription: Vault のロック解除に Face ID を使用します
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.masafy.cryptvault
-        MARKETING_VERSION: "0.1"
+        MARKETING_VERSION: "1.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_STYLE: Automatic
   CryptVaultMac:
     type: application
@@ -56,16 +61,17 @@ targets:
       properties:
         CFBundleDisplayName: CryptVault
         LSMinimumSystemVersion: "13.0"
-        ITSAppUsesNonExemptEncryption: false
+        LSApplicationCategoryType: public.app-category.utilities
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.masafy.cryptvault.mac
-        MARKETING_VERSION: "0.1"
+        MARKETING_VERSION: "1.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "5.0"
         GENERATE_INFOPLIST_FILE: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_STYLE: Automatic
-        # Personal local tool: no App Sandbox (simplifies network + VLC plugin loading).
-        ENABLE_HARDENED_RUNTIME: NO
-        ENABLE_APP_SANDBOX: NO
+        # Mac App Store requires the App Sandbox (entitlements below). Hardened Runtime is left
+        # off so VLCKit's plugin bundles load without a library-validation exception.
+        CODE_SIGN_ENTITLEMENTS: CryptVaultMac.entitlements
         COMBINE_HIDPI_IMAGES: YES

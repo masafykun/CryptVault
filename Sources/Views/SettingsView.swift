@@ -15,8 +15,6 @@ struct SettingsView: View {
     @State private var webdavURL = ""
     @State private var webdavUser = ""
     @State private var webdavPass = ""
-    @State private var authStatus = ""
-    @AppStorage("googleClientID") private var googleClientID = ""
     @AppStorage("appLockEnabled") private var appLockEnabled = true
 
     private let secrets = SecretsStore()
@@ -27,16 +25,18 @@ struct SettingsView: View {
                 Section("このVault") {
                     TextField("名前（タブに表示）", text: $name)
                     Picker("保存先", selection: $kind) {
-                        ForEach(BackendKind.allCases) { Text($0.label).tag($0) }
+                        ForEach(BackendKind.selectable) { Text($0.label).tag($0) }
                     }
-                    TextField(kind == .webdav ? "フォルダ（パス）例: secure-vault" : "Drive のフォルダ名", text: $folder)
+                    TextField(folderPlaceholder, text: $folder)
                         .autocorrectionDisabled()
                         #if os(iOS)
                         .textInputAutocapitalization(.never)
                         #endif
-                    SecureField("CRYPT_PASSWORD", text: $password)
-                    SecureField("CRYPT_SALT (password2)", text: $salt)
-                    Text("別端末で同じファイルを読むには、各端末で同じ保存先・フォルダ・鍵にしてください。")
+                    SecureField("暗号キー（CRYPT_PASSWORD）", text: $password)
+                    SecureField("暗号キー2（CRYPT_SALT）", text: $salt)
+                    Text(kind == .local
+                         ? "ローカルVaultは端末内に暗号化して保存します。鍵は自動生成され、上に表示されます。別端末やサーバで同じファイルを読むには、この鍵を控えて同じ値を入力してください。"
+                         : "別端末で同じファイルを読むには、各端末で同じ保存先・フォルダ・鍵にしてください。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
@@ -56,26 +56,6 @@ struct SettingsView: View {
                         SecureField("パスワード", text: $webdavPass)
                         Text("HetznerはStorage Boxで WebDAV と External Reachability を有効化してください。")
                             .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-
-                if kind == .googleDrive {
-                    Section("Google アカウント（全 Drive Vault 共通）") {
-                        TextField("OAuth クライアントID", text: $googleClientID)
-                            .autocorrectionDisabled()
-                            #if os(iOS)
-                            .textInputAutocapitalization(.never)
-                            .keyboardType(.URL)
-                            #endif
-                        Button {
-                            Task { await connectGoogle() }
-                        } label: {
-                            Label("Google に接続 / 再接続（読み書き権限）",
-                                  systemImage: "person.crop.circle.badge.checkmark")
-                        }
-                        if !authStatus.isEmpty {
-                            Text(authStatus).font(.caption).foregroundStyle(.secondary)
-                        }
                     }
                 }
 
@@ -121,6 +101,14 @@ struct SettingsView: View {
         }
     }
 
+    private var folderPlaceholder: String {
+        switch kind {
+        case .local:  return "フォルダ名（この端末内）例: vault"
+        case .webdav: return "フォルダ（パス）例: secure-vault"
+        case .googleDrive: return "Drive のフォルダ名"
+        }
+    }
+
     private func load() {
         if let p = store.profiles.first(where: { $0.id == profileID }) {
             name = p.name; folder = p.folderName; kind = p.kind; webdavURL = p.webdavURL
@@ -141,19 +129,5 @@ struct SettingsView: View {
         }
         secrets.saveCryptKeys(profile: profileID, password: password, salt: salt)
         secrets.saveWebDAV(profile: profileID, user: webdavUser.trimmingCharacters(in: .whitespaces), pass: webdavPass)
-    }
-
-    private func connectGoogle() async {
-        do {
-            let t = try await DriveAuth().authorize()
-            secrets.saveToken(t)
-            authStatus = t.canWrite
-                ? "✅ 接続OK（書き込み権限あり）"
-                : "⚠️ 読み取りのみ。数分待って、Googleのアプリ連携を解除→再接続してください"
-        } catch DriveAuthError.noClientID {
-            authStatus = "クライアントID を入力してください"
-        } catch {
-            authStatus = "認証失敗: \(error.localizedDescription)"
-        }
     }
 }

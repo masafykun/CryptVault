@@ -24,6 +24,9 @@ struct ContentView: View {
             if selection != "__settings__" && !store.profiles.contains(where: { $0.id == selection }) {
                 selection = store.activeID
             }
+            #if DEBUG
+            if Screenshot.screen == "settings" { selection = "__settings__" }
+            #endif
         }
         .onChange(of: selection) { new in
             if new != "__settings__" { store.setActive(new) }
@@ -47,21 +50,35 @@ struct VaultView: View {
     var body: some View {
         NavigationStack {
             Group {
+                #if DEBUG
+                if Screenshot.screen == "grid", let dir = vm.sections.first?.dir {
+                    FolderGridView(dir: dir, vm: vm)
+                } else if vm.sections.isEmpty {
+                    emptyState
+                } else {
+                    FolderListView(vm: vm)
+                }
+                #else
                 if vm.sections.isEmpty {
                     emptyState
                 } else {
                     FolderListView(vm: vm)
                 }
+                #endif
             }
             .navigationTitle(profile.name)
             .toolbar {
                 #if os(iOS)
-                ToolbarItem(placement: .topBarLeading) { gearButton }
-                ToolbarItemGroup(placement: .topBarTrailing) { trailingActions }
+                if !gridShotMode {
+                    ToolbarItem(placement: .topBarLeading) { gearButton }
+                    ToolbarItemGroup(placement: .topBarTrailing) { trailingActions }
+                }
                 #else
-                ToolbarItemGroup {
-                    gearButton
-                    trailingActions
+                if !gridShotMode {
+                    ToolbarItemGroup {
+                        gearButton
+                        trailingActions
+                    }
                 }
                 #endif
             }
@@ -73,11 +90,31 @@ struct VaultView: View {
                 FolderGridView(dir: route.dir, vm: vm)
             }
         }
-        .onAppear { vm.reloadConnection() }
+        .onAppear {
+            vm.reloadConnection()
+            if profile.kind == .local && vm.sections.isEmpty { Task { await vm.loadList() } }
+        }
+        #if DEBUG
+        .onChange(of: vm.sections) { secs in
+            if Screenshot.selectFirst, vm.selected == nil, let f = secs.first?.files.first {
+                vm.selected = f
+            }
+        }
+        #endif
     }
 
     private var gearButton: some View {
         Button { showSettings = true } label: { Image(systemName: "gearshape") }
+    }
+
+    /// True only inside the DEBUG screenshot harness when a grid is rendered as the tab root,
+    /// so we suppress this view's toolbar (the grid supplies its own).
+    private var gridShotMode: Bool {
+        #if DEBUG
+        return Screenshot.screen == "grid"
+        #else
+        return false
+        #endif
     }
 
     @ViewBuilder private var trailingActions: some View {
@@ -95,12 +132,22 @@ struct VaultView: View {
     private var emptyState: some View {
         VStack(spacing: 16) {
             Image(systemName: "lock.doc").font(.system(size: 48)).foregroundStyle(.secondary)
-            Text(vm.isConnected ? "「更新」でこのVaultの一覧を取得"
-                 : (profile.kind == .googleDrive ? "「接続」でGoogle Driveに接続"
-                                                  : "⚙️設定でWebDAVの接続情報を入力"))
+            Text(emptyMessage)
                 .foregroundStyle(.secondary).multilineTextAlignment(.center)
             if vm.isBusy { ProgressView() }
         }.padding()
+    }
+
+    private var emptyMessage: String {
+        switch profile.kind {
+        case .local:
+            return "右上の ＋ から写真やファイルを追加すると、\n暗号化してこの端末に保存します。"
+        case .webdav:
+            return vm.isConnected ? "「更新」でこのVaultの一覧を取得"
+                                  : "⚙️設定でWebDAVの接続情報を入力してください"
+        case .googleDrive:
+            return vm.isConnected ? "「更新」で一覧を取得" : "「接続」でGoogle Driveに接続"
+        }
     }
 
     @ViewBuilder private var statusBar: some View {

@@ -10,6 +10,8 @@ CryptVault.xcodeproj/
 
 # screenshots / scratch
 *.png
+# ...but the real app icon assets must be tracked
+!Sources/Assets.xcassets/AppIcon.appiconset/*.png
 
 # never commit secrets
 *.token

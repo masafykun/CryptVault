@@ -2,6 +2,7 @@ import SwiftUI
 import ImageIO
 import AVFoundation
 import PhotosUI
+import Security
 import RcloneCryptKit
 
 @MainActor
@@ -36,11 +37,16 @@ final class BackupViewModel: ObservableObject {
     var rootFolderName: String { ProfileStore.folderName(forID: profileID) }
 
     private var profile: Profile? { ProfileStore.profile(forID: profileID) }
-    private var backendKind: BackendKind { profile?.kind ?? .googleDrive }
+    private var backendKind: BackendKind { profile?.kind ?? .local }
 
-    /// Build the storage config for this profile's backend (Drive: a valid token; WebDAV: creds).
+    /// Build the storage config for this profile's backend (local dir, Drive token, or WebDAV creds).
     private func backendConfig() async -> BackendConfig? {
         switch backendKind {
+        case .local:
+            let path = LocalStore.rootPath(forFolder: rootFolderName)
+            LocalStore.ensureRoot(path)
+            isConnected = true
+            return .local(rootPath: path)
         case .googleDrive:
             guard let tok = await ensureValidToken() else { return nil }
             return .drive(accessToken: tok.accessToken, folderName: rootFolderName)
@@ -101,10 +107,24 @@ final class BackupViewModel: ObservableObject {
     private var cryptEngine: RcloneCrypt?   // derived ONCE per refresh — scrypt is expensive
 
     /// Derive the crypt keys once (off the main thread) and cache the engine for reuse.
+    /// A brand-new *local* vault has no keys yet, so we generate a strong random key and store it
+    /// on-device — this makes local vaults usable with zero setup while keeping the keys portable
+    /// (reveal them in Settings to reuse the same vault on another device or a WebDAV server).
     private func makeCryptIfNeeded() async {
-        let pw = secrets.cryptPassword(profile: profileID), salt = secrets.cryptSalt(profile: profileID)
+        var pw = secrets.cryptPassword(profile: profileID), salt = secrets.cryptSalt(profile: profileID)
+        if pw.isEmpty, backendKind == .local {
+            pw = Self.randomKey(); salt = Self.randomKey()
+            secrets.saveCryptKeys(profile: profileID, password: pw, salt: salt)
+        }
         guard !pw.isEmpty else { cryptEngine = nil; return }
         cryptEngine = await Self.deriveCrypt(pw: pw, salt: salt)
+    }
+
+    /// 32-hex-char (128-bit) random string for an auto-generated local vault key.
+    static func randomKey() -> String {
+        var bytes = [UInt8](repeating: 0, count: 16)
+        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        return bytes.map { String(format: "%02x", $0) }.joined()
     }
 
     nonisolated private static func deriveCrypt(pw: String, salt: String) async -> RcloneCrypt? {
@@ -121,6 +141,8 @@ final class BackupViewModel: ObservableObject {
     /// Cheap; called when a vault tab appears.
     func reloadConnection() {
         switch backendKind {
+        case .local:
+            isConnected = true
         case .googleDrive:
             token = secrets.loadToken(); isConnected = token != nil
         case .webdav:

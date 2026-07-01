@@ -8,7 +8,12 @@ final class AppLock: ObservableObject {
     @Published var unlocked = false
     private var authenticating = false
 
-    private var enabled: Bool { (UserDefaults.standard.object(forKey: "appLockEnabled") as? Bool) ?? true }
+    private var enabled: Bool {
+        #if DEBUG
+        if Screenshot.disableLock { return false }   // screenshot harness
+        #endif
+        return (UserDefaults.standard.object(forKey: "appLockEnabled") as? Bool) ?? true
+    }
 
     /// Re-lock (e.g. when the app goes to the background).
     func lockIfNeeded() { if enabled { unlocked = false } }
@@ -27,7 +32,7 @@ final class AppLock: ObservableObject {
         }
         authenticating = true
         ctx.evaluatePolicy(.deviceOwnerAuthentication,
-                           localizedReason: "バックアップを表示するには認証が必要です") { success, _ in
+                           localizedReason: "Vault のロックを解除します") { success, _ in
             Task { @MainActor in
                 self.authenticating = false
                 self.unlocked = success

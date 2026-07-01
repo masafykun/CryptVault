@@ -20,5 +20,8 @@ struct CryptVaultApp: App {
                 }
             }
         }
+        #if os(macOS)
+        .defaultSize(width: 1280, height: 772)
+        #endif
     }
 }
