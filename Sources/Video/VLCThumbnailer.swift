@@ -1,4 +1,5 @@
-import UIKit
+import Foundation
+import CoreGraphics
 import VLCKitSPM
 
 /// Generates a still-frame thumbnail for a video only VLC can decode (webm/mkv/avi/…),
@@ -8,16 +9,16 @@ import VLCKitSPM
 /// itself (`selfRef`) until a callback fires. VLCMediaThumbnailer has its own timeout, so
 /// the continuation is always resumed (image or nil) — no hangs.
 final class VLCThumbnailer: NSObject, VLCMediaThumbnailerDelegate {
-    private var continuation: CheckedContinuation<UIImage?, Never>?
+    private var continuation: CheckedContinuation<PlatformImage?, Never>?
     private var thumbnailer: VLCMediaThumbnailer?
     private var media: VLCMedia?
     private var selfRef: VLCThumbnailer?
 
-    static func thumbnail(url: URL, maxPixel: CGFloat) async -> UIImage? {
+    static func thumbnail(url: URL, maxPixel: CGFloat) async -> PlatformImage? {
         await VLCThumbnailer().fetch(url: url, maxPixel: maxPixel)
     }
 
-    private func fetch(url: URL, maxPixel: CGFloat) async -> UIImage? {
+    private func fetch(url: URL, maxPixel: CGFloat) async -> PlatformImage? {
         await withCheckedContinuation { cont in
             self.continuation = cont
             self.selfRef = self
@@ -36,14 +37,14 @@ final class VLCThumbnailer: NSObject, VLCMediaThumbnailerDelegate {
     }
 
     func mediaThumbnailer(_ mediaThumbnailer: VLCMediaThumbnailer, didFinishThumbnail thumbnail: CGImage) {
-        finish(UIImage(cgImage: thumbnail))
+        finish(PlatformImage.fromCG(thumbnail))
     }
 
     func mediaThumbnailerDidTimeOut(_ mediaThumbnailer: VLCMediaThumbnailer) {
         finish(nil)
     }
 
-    private func finish(_ image: UIImage?) {
+    private func finish(_ image: PlatformImage?) {
         continuation?.resume(returning: image)
         continuation = nil
         thumbnailer = nil

@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 import ImageIO
 import AVFoundation
 import RcloneCryptKit
@@ -19,7 +18,7 @@ final class BackupViewModel: ObservableObject {
         }
     }
     private var allFiles: [DriveFile] = []                // unsorted master; re-sorted into `sections`
-    private var thumbCache: [String: UIImage] = [:]       // fileID -> thumbnail; NOT @Published (per-cell @State drives UI)
+    private var thumbCache: [String: PlatformImage] = [:]       // fileID -> thumbnail; NOT @Published (per-cell @State drives UI)
     private var thumbOrder: [String] = []                 // FIFO eviction order
     private let thumbCap = 400                            // bound thumbnail memory in cache
     private let limiter = AsyncSemaphore(6)               // cap concurrent thumbnail jobs
@@ -165,12 +164,12 @@ final class BackupViewModel: ObservableObject {
     /// Decrypted thumbnail from cache, or downloaded+decrypted+downsampled off the main thread.
     /// Returns the image to the calling cell (which stores it in its own @State) — so loading
     /// one thumbnail does NOT re-render the whole grid.
-    func thumbnail(for file: DriveFile) async -> UIImage? {
+    func thumbnail(for file: DriveFile) async -> PlatformImage? {
         let id = file.id
         if let cached = thumbCache[id] { return cached }
         guard let c = cryptEngine, let token = await ensureValidToken() else { return nil }
         await limiter.wait()
-        let img: UIImage?
+        let img: PlatformImage?
         if file.usesAVFoundation {
             // Decrypt to a temp file (reused for playback) and grab a frame for the thumbnail.
             if let url = await videoURL(for: file) {
@@ -194,7 +193,7 @@ final class BackupViewModel: ObservableObject {
         return img
     }
 
-    func cachedThumbnail(_ id: String) -> UIImage? { thumbCache[id] }
+    func cachedThumbnail(_ id: String) -> PlatformImage? { thumbCache[id] }
 
     /// Decrypted local file URL for a video, written to the temp dir and reused for both the
     /// thumbnail and full-screen playback. Cached so tapping a cell reuses the decrypted file.
@@ -223,28 +222,28 @@ final class BackupViewModel: ObservableObject {
     }
 
     /// Full-resolution decrypted image for the viewer (decoded off the main thread).
-    func fullImage(for file: DriveFile) async -> UIImage? {
+    func fullImage(for file: DriveFile) async -> PlatformImage? {
         guard let c = cryptEngine, let token = await ensureValidToken() else { return nil }
         return await Self.fetchFull(id: file.id, token: token, crypt: c)
     }
 
-    private func cacheThumbnail(_ img: UIImage, for id: String) {
+    private func cacheThumbnail(_ img: PlatformImage, for id: String) {
         thumbCache[id] = img
         thumbOrder.append(id)
         if thumbOrder.count > thumbCap { thumbCache[thumbOrder.removeFirst()] = nil }
     }
 
     // Heavy work below is `nonisolated` so it runs OFF the main actor — scrolling stays smooth.
-    nonisolated private static func fetchThumbnail(id: String, token: OAuthToken, crypt: RcloneCrypt) async -> UIImage? {
+    nonisolated private static func fetchThumbnail(id: String, token: OAuthToken, crypt: RcloneCrypt) async -> PlatformImage? {
         guard let blob = try? await DriveClient(accessToken: token.accessToken).downloadMedia(fileID: id),
               let plain = try? crypt.decryptContent([UInt8](blob)) else { return nil }
         return downsample(Data(plain), maxPixel: 300)
     }
 
-    nonisolated private static func fetchFull(id: String, token: OAuthToken, crypt: RcloneCrypt) async -> UIImage? {
+    nonisolated private static func fetchFull(id: String, token: OAuthToken, crypt: RcloneCrypt) async -> PlatformImage? {
         guard let blob = try? await DriveClient(accessToken: token.accessToken).downloadMedia(fileID: id),
               let plain = try? crypt.decryptContent([UInt8](blob)) else { return nil }
-        return UIImage(data: Data(plain))
+        return PlatformImage(data: Data(plain))
     }
 
     nonisolated private static var mediaTempDir: URL {
@@ -267,17 +266,17 @@ final class BackupViewModel: ObservableObject {
         catch { return nil }
     }
 
-    nonisolated private static func videoThumbnail(url: URL, maxPixel: CGFloat) async -> UIImage? {
+    nonisolated private static func videoThumbnail(url: URL, maxPixel: CGFloat) async -> PlatformImage? {
         let asset = AVURLAsset(url: url)
         let gen = AVAssetImageGenerator(asset: asset)
         gen.appliesPreferredTrackTransform = true
         gen.maximumSize = CGSize(width: maxPixel, height: maxPixel)
         let time = CMTime(seconds: 0.1, preferredTimescale: 600)
         guard let cg = try? await gen.image(at: time).image else { return nil }
-        return UIImage(cgImage: cg)
+        return PlatformImage.fromCG(cg)
     }
 
-    nonisolated private static func downsample(_ data: Data, maxPixel: CGFloat) -> UIImage? {
+    nonisolated private static func downsample(_ data: Data, maxPixel: CGFloat) -> PlatformImage? {
         guard let src = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
         let opts: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -286,6 +285,6 @@ final class BackupViewModel: ObservableObject {
             kCGImageSourceThumbnailMaxPixelSize: maxPixel,
         ]
         guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else { return nil }
-        return UIImage(cgImage: cg)
+        return PlatformImage.fromCG(cg)
     }
 }

@@ -41,7 +41,7 @@ struct LockScreen: View {
     @ObservedObject var lock: AppLock
     var body: some View {
         ZStack {
-            Rectangle().fill(Color(uiColor: .systemBackground)).ignoresSafeArea()
+            Rectangle().fill(Color.appBackground).ignoresSafeArea()
             VStack(spacing: 18) {
                 Image(systemName: "lock.fill").font(.system(size: 48)).foregroundStyle(.secondary)
                 Text("ロックされています").font(.headline)

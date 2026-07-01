@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 
 struct ContentView: View {
     @StateObject private var vm = BackupViewModel()
@@ -16,23 +15,34 @@ struct ContentView: View {
             }
             .navigationTitle("CryptVault")
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button { showSettings = true } label: { Image(systemName: "gearshape") }
+                #if os(iOS)
+                ToolbarItem(placement: .topBarLeading) { gearButton }
+                ToolbarItemGroup(placement: .topBarTrailing) { trailingActions }
+                #else
+                ToolbarItemGroup {
+                    gearButton
+                    trailingActions
                 }
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    if !vm.sections.isEmpty { SortMenu(vm: vm) }
-                    if vm.isConnected {
-                        Button("更新") { Task { await vm.loadList() } }
-                    } else {
-                        Button("接続") { Task { await vm.connect() } }
-                    }
-                }
+                #endif
             }
             .overlay(alignment: .bottom) { statusBar }
             .sheet(isPresented: $showSettings) { SettingsView() }
             .navigationDestination(for: FolderRoute.self) { route in
                 FolderGridView(dir: route.dir, vm: vm)
             }
+        }
+    }
+
+    private var gearButton: some View {
+        Button { showSettings = true } label: { Image(systemName: "gearshape") }
+    }
+
+    @ViewBuilder private var trailingActions: some View {
+        if !vm.sections.isEmpty { SortMenu(vm: vm) }
+        if vm.isConnected {
+            Button("更新") { Task { await vm.loadList() } }
+        } else {
+            Button("接続") { Task { await vm.connect() } }
         }
     }
 
@@ -121,11 +131,13 @@ struct FolderGridView: View {
             .padding(.horizontal, 2)
         }
         .navigationTitle(title)
+        #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        #endif
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) { SortMenu(vm: vm) }
+            ToolbarItem { SortMenu(vm: vm) }
         }
-        .fullScreenCover(item: $vm.selected) { f in
+        .fullCover(item: $vm.selected) { f in
             if f.usesVLC {
                 VLCVideoViewer(file: f) { await vm.videoURL(for: $0) }
             } else if f.usesAVFoundation {
@@ -141,9 +153,9 @@ struct FolderGridView: View {
 /// re-renders this cell — not the whole grid (this is what keeps scrolling smooth).
 struct ThumbCell: View {
     let file: DriveFile
-    let load: (DriveFile) async -> UIImage?
+    let load: (DriveFile) async -> PlatformImage?
     let onTap: () -> Void
-    @State private var image: UIImage?
+    @State private var image: PlatformImage?
     @State private var loaded = false      // distinguishes "still loading" from "no thumbnail"
 
     var body: some View {
@@ -152,7 +164,7 @@ struct ThumbCell: View {
                 .aspectRatio(1, contentMode: .fit)      // square tile (no overlap)
                 .overlay {
                     if let image {
-                        Image(uiImage: image).resizable().scaledToFill()
+                        Image(platformImage: image).resizable().scaledToFill()
                     } else if loaded {
                         Image(systemName: file.isVideo ? "film" : "photo")
                             .font(.title2).foregroundStyle(.secondary)

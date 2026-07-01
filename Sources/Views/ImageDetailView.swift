@@ -1,16 +1,15 @@
 import SwiftUI
-import UIKit
 
 /// Full-screen, Photos-like viewer. Shows the thumbnail instantly, then swaps in the
 /// full-resolution decrypted image. Pinch / double-tap to zoom, drag to pan when zoomed,
 /// swipe down (or ✕) to dismiss.
 struct PhotoViewer: View {
     let file: DriveFile
-    let placeholder: UIImage?
-    let loadFull: (DriveFile) async -> UIImage?
+    let placeholder: PlatformImage?
+    let loadFull: (DriveFile) async -> PlatformImage?
 
     @Environment(\.dismiss) private var dismiss
-    @State private var full: UIImage?
+    @State private var full: PlatformImage?
 
     @State private var scale: CGFloat = 1
     @State private var lastScale: CGFloat = 1
@@ -23,7 +22,7 @@ struct PhotoViewer: View {
             Color.black.ignoresSafeArea()
 
             if let img = full ?? placeholder {
-                Image(uiImage: img)
+                Image(platformImage: img)
                     .resizable()
                     .scaledToFit()
                     .scaleEffect(scale)
@@ -48,6 +47,9 @@ struct PhotoViewer: View {
                 Spacer()
             }
         }
+        #if os(macOS)
+        .frame(minWidth: 640, minHeight: 480)
+        #endif
         .task { full = await loadFull(file) }
     }
 

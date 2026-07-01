@@ -43,6 +43,9 @@ struct VideoViewer: View {
                 Spacer()
             }
         }
+        #if os(macOS)
+        .frame(minWidth: 640, minHeight: 480)
+        #endif
         .task {
             if let url = await load(file) {
                 let p = AVPlayer(url: url)

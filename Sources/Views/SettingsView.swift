@@ -18,8 +18,10 @@ struct SettingsView: View {
                 Section("Google OAuth クライアントID") {
                     TextField("xxxx.apps.googleusercontent.com", text: $googleClientID)
                         .autocorrectionDisabled()
+                        #if os(iOS)
                         .textInputAutocapitalization(.never)
                         .keyboardType(.URL)
+                        #endif
                 }
                 Section("復号キー（rclone crypt）") {
                     SecureField("CRYPT_PASSWORD", text: $password)
@@ -28,7 +30,9 @@ struct SettingsView: View {
                 Section("Driveのバックアップフォルダ") {
                     TextField("フォルダ名", text: $rootFolderName)
                         .autocorrectionDisabled()
+                        #if os(iOS)
                         .textInputAutocapitalization(.never)
+                        #endif
                 }
                 Section {
                     Text("入力した鍵はこの端末のKeychainにのみ保存され、画像の復号にだけ使われます。Googleには暗号文しか渡りません。")

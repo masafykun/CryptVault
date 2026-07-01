@@ -1,7 +1,11 @@
 import Foundation
-import UIKit
 import CryptoKit
 import AuthenticationServices
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 
 struct OAuthToken: Codable {
     var accessToken: String
@@ -141,9 +145,15 @@ final class DriveAuth: NSObject {
 
 extension DriveAuth: ASWebAuthenticationPresentationContextProviding {
     func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
-        UIApplication.shared.connectedScenes
+        #if os(macOS)
+        return NSApplication.shared.keyWindow
+            ?? NSApplication.shared.windows.first
+            ?? ASPresentationAnchor()
+        #else
+        return UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
             .flatMap { $0.windows }
             .first { $0.isKeyWindow } ?? ASPresentationAnchor()
+        #endif
     }
 }

@@ -3,6 +3,7 @@ options:
   bundleIdPrefix: com.masafy
   deploymentTarget:
     iOS: "16.0"
+    macOS: "13.0"
   createIntermediateGroups: true
 packages:
   RcloneCryptKit:
@@ -40,3 +41,31 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_STYLE: Automatic
+  CryptVaultMac:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources
+    dependencies:
+      - package: RcloneCryptKit
+        product: RcloneCryptKit
+      - package: VLCKitSPM
+        product: VLCKitSPM
+    info:
+      path: CryptVaultMac-Info.plist
+      properties:
+        CFBundleDisplayName: CryptVault
+        LSMinimumSystemVersion: "13.0"
+        ITSAppUsesNonExemptEncryption: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.masafy.cryptvault.mac
+        MARKETING_VERSION: "0.1"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.0"
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_STYLE: Automatic
+        # Personal local tool: no App Sandbox (simplifies network + VLC plugin loading).
+        ENABLE_HARDENED_RUNTIME: NO
+        ENABLE_APP_SANDBOX: NO
+        COMBINE_HIDPI_IMAGES: YES

@@ -54,6 +54,9 @@ struct VLCVideoViewer: View {
                 Spacer()
             }
         }
+        #if os(macOS)
+        .frame(minWidth: 640, minHeight: 480)
+        #endif
         .task {
             if let url = await load(file) {
                 controller.start(url: url)
