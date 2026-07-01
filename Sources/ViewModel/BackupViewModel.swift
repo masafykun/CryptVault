@@ -29,6 +29,27 @@ final class BackupViewModel: ObservableObject {
     private let secrets = SecretsStore()
     private let auth = DriveAuth()
     private var token: OAuthToken?
+    private var refreshTask: Task<OAuthToken?, Never>?   // dedup concurrent refreshes
+
+    /// A currently-valid access token, refreshing (once, shared) if the stored one has expired.
+    /// Returns nil and flips `isConnected` off if there's no token / refresh fails — that makes
+    /// the "接続" button reappear so the user can re-login.
+    private func ensureValidToken() async -> OAuthToken? {
+        guard let t = token else { isConnected = false; return nil }
+        if t.isValid { return t }
+        if let task = refreshTask { return await task.value }
+        let task = Task { () -> OAuthToken? in try? await auth.refresh(t) }
+        refreshTask = task
+        let fresh = await task.value
+        refreshTask = nil
+        if let fresh {
+            token = fresh; secrets.saveToken(fresh); isConnected = true
+        } else {
+            isConnected = false
+            status = "認証が切れました。「接続」で再ログインしてください"
+        }
+        return fresh
+    }
 
     init() {
         token = secrets.loadToken()
@@ -70,13 +91,14 @@ final class BackupViewModel: ObservableObject {
     }
 
     func loadList() async {
-        guard let token else { status = "未接続です"; return }
+        guard token != nil else { status = "未接続です"; return }
         isBusy = true; defer { isBusy = false }
+        guard let tok = await ensureValidToken() else { return }
         await makeCryptIfNeeded()
         guard let c = cryptEngine else { status = "暗号パスワード未設定（⚙️設定から入力）"; return }
         do {
             status = "一覧取得中…"
-            let client = DriveClient(accessToken: token.accessToken)
+            let client = DriveClient(accessToken: tok.accessToken)
             let folder = rootFolderName
             guard let rootID = try await client.findFolderID(named: folder) else {
                 status = "「\(folder)」フォルダが見つかりません"; return
@@ -89,6 +111,9 @@ final class BackupViewModel: ObservableObject {
             thumbCache = [:]; thumbOrder = []
             clearVideoTemps()
             status = "\(files.count) 件 / \(sections.count) フォルダ"
+        } catch DriveError.http(401) {
+            isConnected = false
+            status = "認証が切れました。「接続」で再ログインしてください"
         } catch {
             status = "取得失敗: \(error.localizedDescription)"
         }
@@ -117,7 +142,7 @@ final class BackupViewModel: ObservableObject {
     func thumbnail(for file: DriveFile) async -> UIImage? {
         let id = file.id
         if let cached = thumbCache[id] { return cached }
-        guard let token, let c = cryptEngine else { return nil }
+        guard let c = cryptEngine, let token = await ensureValidToken() else { return nil }
         await limiter.wait()
         let img: UIImage?
         if file.usesAVFoundation {
@@ -145,7 +170,7 @@ final class BackupViewModel: ObservableObject {
     func videoURL(for file: DriveFile) async -> URL? {
         let id = file.id
         if let u = videoTempURLs[id], FileManager.default.fileExists(atPath: u.path) { return u }
-        guard let token, let c = cryptEngine else { return nil }
+        guard let c = cryptEngine, let token = await ensureValidToken() else { return nil }
         let ext = file.fileExtension.isEmpty ? "mp4" : file.fileExtension
         guard let url = await Self.decryptToTemp(id: id, token: token, crypt: c, ext: ext) else { return nil }
         cacheVideoTemp(url, for: id)
@@ -168,7 +193,7 @@ final class BackupViewModel: ObservableObject {
 
     /// Full-resolution decrypted image for the viewer (decoded off the main thread).
     func fullImage(for file: DriveFile) async -> UIImage? {
-        guard let token, let c = cryptEngine else { return nil }
+        guard let c = cryptEngine, let token = await ensureValidToken() else { return nil }
         return await Self.fetchFull(id: file.id, token: token, crypt: c)
     }
 

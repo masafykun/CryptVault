@@ -78,6 +78,28 @@ final class DriveAuth: NSObject {
         }
     }
 
+    /// Exchange the stored refresh token for a fresh access token (no user interaction).
+    /// Google usually omits a new refresh_token on refresh, so we keep the existing one.
+    func refresh(_ token: OAuthToken) async throws -> OAuthToken {
+        guard clientID.hasSuffix(".apps.googleusercontent.com") else { throw DriveAuthError.noClientID }
+        guard let rt = token.refreshToken else { throw DriveAuthError.badResponse }
+        var req = URLRequest(url: URL(string: "https://oauth2.googleapis.com/token")!)
+        req.httpMethod = "POST"
+        req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        req.httpBody = Self.formEncode([
+            "client_id": clientID,
+            "refresh_token": rt,
+            "grant_type": "refresh_token",
+        ]).data(using: .utf8)
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard (resp as? HTTPURLResponse)?.statusCode == 200 else { throw DriveAuthError.badResponse }
+        struct Resp: Codable { let access_token: String; let refresh_token: String?; let expires_in: Double? }
+        let r = try JSONDecoder().decode(Resp.self, from: data)
+        return OAuthToken(accessToken: r.access_token,
+                          refreshToken: r.refresh_token ?? token.refreshToken,
+                          expiry: Date().addingTimeInterval(r.expires_in ?? 3500))
+    }
+
     private func exchange(code: String) async throws -> OAuthToken {
         var req = URLRequest(url: URL(string: "https://oauth2.googleapis.com/token")!)
         req.httpMethod = "POST"
