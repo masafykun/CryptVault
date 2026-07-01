@@ -45,6 +45,18 @@ struct SecretsStore {
         KeychainStore.set(salt, for: SecretKey.cryptSalt)
     }
 
+    // Per-profile crypt keys (each vault/tab has its own).
+    func cryptPassword(profile id: String) -> String { KeychainStore.get("crypt.password.\(id)") ?? "" }
+    func cryptSalt(profile id: String) -> String { KeychainStore.get("crypt.salt.\(id)") ?? "" }
+    func saveCryptKeys(profile id: String, password: String, salt: String) {
+        KeychainStore.set(password, for: "crypt.password.\(id)")
+        KeychainStore.set(salt, for: "crypt.salt.\(id)")
+    }
+    func deleteCryptKeys(profile id: String) {
+        KeychainStore.delete("crypt.password.\(id)")
+        KeychainStore.delete("crypt.salt.\(id)")
+    }
+
     func loadToken() -> OAuthToken? {
         guard let s = KeychainStore.get(SecretKey.oauthToken),
               let d = s.data(using: .utf8) else { return nil }

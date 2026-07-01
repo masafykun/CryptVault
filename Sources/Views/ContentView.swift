@@ -1,9 +1,47 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// App shell: one tab per profile (vault). Switching tabs flips between vaults; each keeps its
+/// own loaded state. A trailing "設定" tab manages profiles and global settings.
 struct ContentView: View {
-    @StateObject private var vm = BackupViewModel()
+    @StateObject private var store = ProfileStore()
+    @State private var selection = ""
+
+    var body: some View {
+        TabView(selection: $selection) {
+            ForEach(store.profiles) { profile in
+                VaultView(profile: profile)
+                    .tabItem { Label(profile.name, systemImage: "lock.doc.fill") }
+                    .tag(profile.id)
+            }
+            SettingsView(profileID: store.activeID)
+                .tabItem { Label("設定", systemImage: "gearshape") }
+                .tag("__settings__")
+        }
+        .environmentObject(store)
+        .onAppear {
+            if selection != "__settings__" && !store.profiles.contains(where: { $0.id == selection }) {
+                selection = store.activeID
+            }
+        }
+        .onChange(of: selection) { new in
+            if new != "__settings__" { store.setActive(new) }
+        }
+    }
+}
+
+/// One vault tab: the folder browser for a single profile. Owns its own view model so switching
+/// tabs preserves each vault's loaded list/scroll state.
+struct VaultView: View {
+    let profile: Profile
+    @StateObject private var vm: BackupViewModel
+    @EnvironmentObject private var store: ProfileStore
     @State private var showSettings = false
+
+    init(profile: Profile) {
+        self.profile = profile
+        _vm = StateObject(wrappedValue: BackupViewModel(profileID: profile.id))
+    }
 
     var body: some View {
         NavigationStack {
@@ -14,7 +52,7 @@ struct ContentView: View {
                     FolderListView(vm: vm)
                 }
             }
-            .navigationTitle("CryptVault")
+            .navigationTitle(profile.name)
             .toolbar {
                 #if os(iOS)
                 ToolbarItem(placement: .topBarLeading) { gearButton }
@@ -27,11 +65,14 @@ struct ContentView: View {
                 #endif
             }
             .overlay(alignment: .bottom) { statusBar }
-            .sheet(isPresented: $showSettings) { SettingsView(vm: vm) }
+            .sheet(isPresented: $showSettings, onDismiss: { vm.reloadConnection() }) {
+                SettingsView(profileID: profile.id)
+            }
             .navigationDestination(for: FolderRoute.self) { route in
                 FolderGridView(dir: route.dir, vm: vm)
             }
         }
+        .onAppear { vm.reloadConnection() }
     }
 
     private var gearButton: some View {
@@ -51,7 +92,7 @@ struct ContentView: View {
     private var emptyState: some View {
         VStack(spacing: 16) {
             Image(systemName: "lock.doc").font(.system(size: 48)).foregroundStyle(.secondary)
-            Text(vm.isConnected ? "「更新」でバックアップ一覧を取得" : "「接続」でGoogle Driveに接続")
+            Text(vm.isConnected ? "「更新」でこのVaultの一覧を取得" : "「接続」でGoogle Driveに接続")
                 .foregroundStyle(.secondary).multilineTextAlignment(.center)
             if vm.isBusy { ProgressView() }
         }.padding()

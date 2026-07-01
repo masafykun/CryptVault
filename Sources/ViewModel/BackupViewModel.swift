@@ -26,11 +26,13 @@ final class BackupViewModel: ObservableObject {
     private var videoTempOrder: [String] = []             // FIFO eviction order (deletes file from disk)
     private let videoTempCap = 12                          // keep only a few decrypted videos on disk at once
 
-    /// The plaintext Drive folder that holds the rclone crypt remote (configurable in Settings).
-    var rootFolderName: String {
-        let v = UserDefaults.standard.string(forKey: "rootFolderName") ?? ""
-        return v.isEmpty ? "comfyui-backup" : v
-    }
+    /// Which vault (profile) this view model serves. Folder + crypt keys come from the profile;
+    /// the Google token/client id are shared across profiles.
+    let profileID: String
+
+    /// The plaintext Drive folder that holds this profile's rclone crypt remote (read live so
+    /// folder edits in Settings take effect on the next refresh).
+    var rootFolderName: String { ProfileStore.folderName(forID: profileID) }
 
     private let secrets = SecretsStore()
     private let auth = DriveAuth()
@@ -57,7 +59,8 @@ final class BackupViewModel: ObservableObject {
         return fresh
     }
 
-    init() {
+    init(profileID: String) {
+        self.profileID = profileID
         token = secrets.loadToken()
         isConnected = token != nil
         if let raw = UserDefaults.standard.string(forKey: "sortOrder"), let o = SortOrder(rawValue: raw) {
@@ -70,7 +73,7 @@ final class BackupViewModel: ObservableObject {
 
     /// Derive the crypt keys once (off the main thread) and cache the engine for reuse.
     private func makeCryptIfNeeded() async {
-        let pw = secrets.cryptPassword, salt = secrets.cryptSalt
+        let pw = secrets.cryptPassword(profile: profileID), salt = secrets.cryptSalt(profile: profileID)
         guard !pw.isEmpty else { cryptEngine = nil; return }
         cryptEngine = await Self.deriveCrypt(pw: pw, salt: salt)
     }
@@ -83,6 +86,13 @@ final class BackupViewModel: ObservableObject {
         var out = files
         for i in out.indices { out[i].decryptedPath = crypt.decryptName(out[i].encryptedPath) }
         return out
+    }
+
+    /// Re-read the shared Google token from the Keychain (e.g. after connecting in Settings or
+    /// in another tab). Cheap; called when a vault tab appears.
+    func reloadConnection() {
+        token = secrets.loadToken()
+        isConnected = token != nil
     }
 
     func connect() async {
