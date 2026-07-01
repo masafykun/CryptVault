@@ -25,6 +25,7 @@ targets:
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         ITSAppUsesNonExemptEncryption: false
+        NSFaceIDUsageDescription: バックアップの閲覧をロック解除するために Face ID を使用します
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.masafy.cryptvault

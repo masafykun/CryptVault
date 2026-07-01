@@ -6,11 +6,15 @@ struct SettingsView: View {
     @State private var salt = ""
     @AppStorage("googleClientID") private var googleClientID = ""
     @AppStorage("rootFolderName") private var rootFolderName = "comfyui-backup"
+    @AppStorage("appLockEnabled") private var appLockEnabled = true
     private let secrets = SecretsStore()
 
     var body: some View {
         NavigationStack {
             Form {
+                Section("セキュリティ") {
+                    Toggle("起動時に認証（Face ID / パスコード）", isOn: $appLockEnabled)
+                }
                 Section("Google OAuth クライアントID") {
                     TextField("xxxx.apps.googleusercontent.com", text: $googleClientID)
                         .autocorrectionDisabled()
