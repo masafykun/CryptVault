@@ -1,33 +1,44 @@
 import SwiftUI
-import AVKit
 
-/// Full-screen playback for a decrypted video. Asks the view model to decrypt the file to a
-/// temp URL, then plays it with AVPlayer. Only AVFoundation-decodable formats (mp4/mov/m4v)
-/// play; anything else shows a graceful "can't play" message instead of a black screen.
-struct VideoViewer: View {
+/// Full-screen playback for formats AVFoundation can't decode (webm/mkv/avi/…), via VLC.
+/// Decrypts to a temp file (through the view model), loops, tap to play/pause, ✕ to close.
+struct VLCVideoViewer: View {
     let file: DriveFile
     let load: (DriveFile) async -> URL?
 
     @Environment(\.dismiss) private var dismiss
-    @State private var player: AVPlayer?
+    @StateObject private var controller = VLCController()
+    @State private var ready = false
     @State private var failed = false
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            if let player {
-                VideoPlayer(player: player).ignoresSafeArea()
+            if ready {
+                VLCPlayerView(controller: controller)
+                    .ignoresSafeArea()
+                    .onTapGesture { controller.togglePlayPause() }
+                if !controller.isPlaying {
+                    Image(systemName: "play.circle.fill")
+                        .font(.system(size: 64))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .shadow(radius: 6)
+                        .onTapGesture { controller.togglePlayPause() }
+                }
             } else if failed {
                 VStack(spacing: 12) {
                     Image(systemName: "film.slash").font(.system(size: 44)).foregroundStyle(.secondary)
-                    Text("この形式は再生できません").foregroundStyle(.white)
+                    Text("この動画を復号できませんでした").foregroundStyle(.white)
                     Text(file.displayName)
                         .font(.caption).foregroundStyle(.secondary)
                         .lineLimit(1).truncationMode(.middle).padding(.horizontal, 40)
                 }
             } else {
-                ProgressView().tint(.white)
+                VStack(spacing: 10) {
+                    ProgressView().tint(.white)
+                    Text("復号中…").font(.caption).foregroundStyle(.secondary)
+                }
             }
 
             VStack {
@@ -45,13 +56,12 @@ struct VideoViewer: View {
         }
         .task {
             if let url = await load(file) {
-                let p = AVPlayer(url: url)
-                player = p
-                p.play()
+                controller.start(url: url)
+                ready = true
             } else {
                 failed = true
             }
         }
-        .onDisappear { player?.pause() }
+        .onDisappear { controller.stop() }
     }
 }

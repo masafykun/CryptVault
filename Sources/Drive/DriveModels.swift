@@ -22,15 +22,18 @@ struct DriveFile: Identifiable, Hashable {
     var fileExtension: String {
         (displayName as NSString).pathExtension.lowercased()
     }
-    /// Formats AVFoundation can both thumbnail and play back.
-    var isPlayableVideo: Bool {
+    /// Formats AVFoundation plays natively (hardware decode + native scrubber controls,
+    /// and thumbnails via AVAssetImageGenerator).
+    var usesAVFoundation: Bool {
         ["mp4", "mov", "m4v"].contains(fileExtension)
     }
-    /// Broader set treated as "video" for the ▶️ badge. Some (webm/mkv/avi) can't
-    /// actually be decoded by AVFoundation — the viewer shows a graceful fallback.
-    var isVideo: Bool {
-        isPlayableVideo || ["webm", "mkv", "avi"].contains(fileExtension)
+    /// Formats AVFoundation can't decode but VLC (MobileVLCKit) can.
+    var usesVLC: Bool {
+        ["webm", "mkv", "avi", "flv", "wmv", "mpg", "mpeg", "ts", "m2ts",
+         "3gp", "ogv", "vob", "asf", "rm", "rmvb"].contains(fileExtension)
     }
+    /// Any playable video (drives the ▶️ badge and full-screen routing).
+    var isVideo: Bool { usesAVFoundation || usesVLC }
 }
 
 /// A group of files that share the same decrypted folder path (one grid section).

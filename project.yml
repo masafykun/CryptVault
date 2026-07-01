@@ -8,6 +8,9 @@ packages:
   RcloneCryptKit:
     url: https://github.com/masafykun/RcloneCryptKit.git
     from: 0.1.0
+  VLCKitSPM:
+    url: https://github.com/tylerjonesio/vlckit-spm.git
+    exactVersion: 3.6.0
 targets:
   CryptVault:
     type: application
@@ -17,6 +20,8 @@ targets:
     dependencies:
       - package: RcloneCryptKit
         product: RcloneCryptKit
+      - package: VLCKitSPM
+        product: VLCKitSPM
     info:
       path: CryptVault-Info.plist
       properties:

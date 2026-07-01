@@ -24,7 +24,9 @@ struct ContentView: View {
                 .overlay(alignment: .bottom) { statusBar }
                 .sheet(isPresented: $showSettings) { SettingsView() }
                 .fullScreenCover(item: $vm.selected) { f in
-                    if f.isVideo {
+                    if f.usesVLC {
+                        VLCVideoViewer(file: f) { await vm.videoURL(for: $0) }
+                    } else if f.usesAVFoundation {
                         VideoViewer(file: f) { await vm.videoURL(for: $0) }
                     } else {
                         PhotoViewer(file: f, placeholder: vm.cachedThumbnail(f.id)) { await vm.fullImage(for: $0) }

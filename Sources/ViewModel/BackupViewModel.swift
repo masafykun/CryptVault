@@ -120,13 +120,16 @@ final class BackupViewModel: ObservableObject {
         guard let token, let c = cryptEngine else { return nil }
         await limiter.wait()
         let img: UIImage?
-        if file.isVideo {
+        if file.usesAVFoundation {
             // Decrypt to a temp file (reused for playback) and grab a frame for the thumbnail.
             if let url = await videoURL(for: file) {
                 img = await Self.videoThumbnail(url: url, maxPixel: 300)
             } else {
                 img = nil
             }
+        } else if file.usesVLC {
+            // Non-Apple formats: show the film icon in the grid; decrypt only when opened.
+            img = nil
         } else {
             img = await Self.fetchThumbnail(id: id, token: token, crypt: c)
         }
