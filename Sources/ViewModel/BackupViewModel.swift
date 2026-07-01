@@ -54,6 +54,12 @@ final class BackupViewModel: ObservableObject {
         refreshTask = task
         let fresh = await task.value
         refreshTask = nil
+        // If Settings/another tab saved a newer valid token while we were refreshing, keep THAT —
+        // never clobber a fresh (possibly write-scoped) token with our older refresh result.
+        if let latest = secrets.loadToken(), latest.isValid, latest.accessToken != t.accessToken {
+            token = latest; isConnected = true
+            return latest
+        }
         if let fresh {
             token = fresh; secrets.saveToken(fresh); isConnected = true
         } else {
