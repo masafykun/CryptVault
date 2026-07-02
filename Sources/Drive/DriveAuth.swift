@@ -56,11 +56,13 @@ final class DriveAuth: NSObject {
     private var redirectURI: String { "\(redirectScheme):/oauth2redirect" }
 
     private var pkceVerifier = ""
+    private var stateToken = ""
     private var session: ASWebAuthenticationSession?   // retain during the flow
 
     func authorize() async throws -> OAuthToken {
         guard clientID.hasSuffix(".apps.googleusercontent.com") else { throw DriveAuthError.noClientID }
         pkceVerifier = Self.randomURLSafe(64)
+        stateToken = Self.randomURLSafe(16)
         var comps = URLComponents(string: "https://accounts.google.com/o/oauth2/v2/auth")!
         comps.queryItems = [
             .init(name: "client_id", value: clientID),
@@ -71,10 +73,13 @@ final class DriveAuth: NSObject {
             .init(name: "code_challenge_method", value: "S256"),
             .init(name: "access_type", value: "offline"),
             .init(name: "prompt", value: "consent"),
+            .init(name: "state", value: stateToken),
         ]
         let callback = try await present(authURL: comps.url!)
-        guard let code = URLComponents(url: callback, resolvingAgainstBaseURL: false)?
-            .queryItems?.first(where: { $0.name == "code" })?.value
+        let items = URLComponents(url: callback, resolvingAgainstBaseURL: false)?.queryItems
+        // The callback must carry back our `state` (CSRF/defense-in-depth on top of PKCE).
+        guard let code = items?.first(where: { $0.name == "code" })?.value,
+              items?.first(where: { $0.name == "state" })?.value == stateToken
         else { throw DriveAuthError.badResponse }
         return try await exchange(code: code)
     }
@@ -129,7 +134,8 @@ final class DriveAuth: NSObject {
             "grant_type": "authorization_code",
             "redirect_uri": redirectURI,
         ]).data(using: .utf8)
-        let (data, _) = try await URLSession.shared.data(for: req)
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard (resp as? HTTPURLResponse)?.statusCode == 200 else { throw DriveAuthError.badResponse }
         struct Resp: Codable { let access_token: String; let refresh_token: String?; let expires_in: Double?; let scope: String? }
         let r = try JSONDecoder().decode(Resp.self, from: data)
         return OAuthToken(accessToken: r.access_token, refreshToken: r.refresh_token,
@@ -144,7 +150,9 @@ final class DriveAuth: NSObject {
     }
     static func randomURLSafe(_ n: Int) -> String {
         var bytes = [UInt8](repeating: 0, count: n)
-        _ = SecRandomCopyBytes(kSecRandomDefault, n, &bytes)
+        let status = SecRandomCopyBytes(kSecRandomDefault, n, &bytes)
+        // A failed CSPRNG must never silently yield an all-zero "random" value.
+        precondition(status == errSecSuccess, "SecRandomCopyBytes failed: \(status)")
         return base64url(Data(bytes))
     }
     static func codeChallenge(_ verifier: String) -> String {

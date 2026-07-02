@@ -7,8 +7,9 @@ options:
   createIntermediateGroups: true
 packages:
   RcloneCryptKit:
+    # Crypto engine — pinned exactly (supply-chain: releases only move by an explicit retag here).
     url: https://github.com/masafykun/RcloneCryptKit.git
-    from: 0.2.0
+    exactVersion: 0.2.1
   VLCKitSPM:
     url: https://github.com/tylerjonesio/vlckit-spm.git
     exactVersion: 3.6.0

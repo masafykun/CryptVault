@@ -21,14 +21,21 @@ struct DriveClient {
     let accessToken: String
     private let base = "https://www.googleapis.com/drive/v3"
 
+    /// Escape a value embedded in a Drive v3 `q` string literal ('...'), so names containing
+    /// quotes/backslashes can't break out of the query.
+    private static func qEscape(_ s: String) -> String {
+        s.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "'", with: "\\'")
+    }
+
     func findFolderID(named name: String, parent: String? = nil) async throws -> String? {
-        var q = "name = '\(name)' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
-        if let parent { q += " and '\(parent)' in parents" }
+        var q = "name = '\(Self.qEscape(name))' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+        if let parent { q += " and '\(Self.qEscape(parent))' in parents" }
         return try await rawList(query: q).first?.id
     }
 
     func listChildren(folderID: String) async throws -> [DriveFile] {
-        try await rawList(query: "'\(folderID)' in parents and trashed = false")
+        try await rawList(query: "'\(Self.qEscape(folderID))' in parents and trashed = false")
     }
 
     /// Recursively walk a folder, returning every leaf file with its full *encrypted* path.

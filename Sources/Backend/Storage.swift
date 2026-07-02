@@ -121,9 +121,14 @@ enum LocalStore {
         return root
     }
 
-    /// Absolute path of a vault whose folder name is `folderName`.
+    /// Absolute path of a vault whose folder name is `folderName`. The name is reduced to safe
+    /// path components — "/", "." and ".." segments can never escape the Vaults directory.
     static func rootPath(forFolder folderName: String) -> String {
-        base.appendingPathComponent(folderName.isEmpty ? "vault" : folderName, isDirectory: true).path
+        let parts = folderName.components(separatedBy: "/")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && $0 != ".." && !$0.hasPrefix(".") }
+        let safe = parts.joined(separator: "_")
+        return base.appendingPathComponent(safe.isEmpty ? "vault" : safe, isDirectory: true).path
     }
 
     private static func rootURL(_ rootPath: String) -> URL { URL(fileURLWithPath: rootPath, isDirectory: true) }
